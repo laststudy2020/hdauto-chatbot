@@ -1,0 +1,8 @@
+old_model_name,new_model_name,compatibility_notes,program_convertible,terminal_compatible,dimension_compatible,source_url
+FX3U-32MT/ES,FX5U-32MT/ES,GX Works3로 프로그램 변환 필요. 디바이스 영역 확장됨. 통신은 RS-422→Ethernet 내장으로 변경.,true,true,false,https://www.mitsubishielectric.co.jp
+FX3U-16MT/ES,FX5U-16MT/ES,GX Works3로 변환. 기본 명령어 호환. 일부 응용 명령어 변환기 자동 처리.,true,true,false,https://www.mitsubishielectric.co.jp
+FX3U-48MT/ES,FX5U-48MT/ES,GX Works3로 변환 필요. 고속카운터 스펙 변경 확인 필요.,true,true,false,https://www.mitsubishielectric.co.jp
+MR-J2S-70A,MR-J4-70A,모터 커넥터 변경(CN1). 파라미터 재설정 필요. MR Configurator2 사용.,false,false,false,https://www.mitsubishielectric.co.jp
+MR-J2S-40A,MR-J4-40A,모터 커넥터 변경. 엔코더 케이블 교체 필요. 제어 성능 향상.,false,false,false,https://www.mitsubishielectric.co.jp
+FR-E740-0.75K,FR-E840-0080-4-60,파라미터 체계 변경. FR Configurator2로 이관 가능. STO 기능 추가.,true,false,false,https://www.mitsubishielectric.co.jp
+GP-4301T,SP5B41,화면 프로젝트 GP-Pro EX→SP Pro-Server 변환 도구 제공. 화면 사이즈 상이.,true,false,false,https://www.proface.com

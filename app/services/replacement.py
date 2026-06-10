@@ -1,0 +1,101 @@
+from sqlalchemy import select, or_
+from sqlalchemy.orm import selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.db.models import Product, Replacement, Specification, ProductStatus
+from app.core.clova import clova_client, SYSTEM_PROMPTS
+
+
+async def find_replacement(model_name: str, db: AsyncSession) -> str:
+    # 1) 모델명으로 제품 검색 (부분 일치)
+    stmt = (
+        select(Product)
+        .options(selectinload(Product.specs))
+        .where(
+            or_(
+                Product.model_name.ilike(f"%{model_name}%"),
+                Product.series.ilike(f"%{model_name}%"),
+            )
+        )
+    )
+    result = await db.execute(stmt)
+    product = result.scalars().first()
+
+    if not product:
+        return (
+            f"'{model_name}' 모델 정보를 찾지 못했습니다.\n"
+            f"정확한 모델명을 확인하시거나 현대자동화로 문의해 주세요."
+        )
+
+    # 2) 현재 판매 중
+    if product.status == ProductStatus.ACTIVE:
+        spec_info = ""
+        if product.specs:
+            s = product.specs
+            parts = []
+            if s.input_voltage: parts.append(f"전원: {s.input_voltage}")
+            if s.io_points: parts.append(f"입출력: {s.io_points}")
+            if s.dimension_w:
+                parts.append(f"외형: {s.dimension_w}x{s.dimension_h}x{s.dimension_d}mm")
+            if parts:
+                spec_info = "\n" + " | ".join(parts)
+        return (
+            f"'{product.model_name}'은(는) 현재 정상 판매 중입니다.\n"
+            f"제조사: {product.manufacturer} | 시리즈: {product.series}"
+            f"{spec_info}"
+        )
+
+    # 3) 단종 → 대체품 검색
+    stmt2 = (
+        select(Replacement)
+        .options(
+            selectinload(Replacement.new_product).selectinload(Product.specs)
+        )
+        .where(Replacement.old_model_id == product.id)
+    )
+    result2 = await db.execute(stmt2)
+    replacements = result2.scalars().all()
+
+    if not replacements:
+        return (
+            f"'{product.model_name}'은(는) 단종 제품이지만\n"
+            f"등록된 대체품 정보가 없습니다. 현대자동화로 문의해 주세요."
+        )
+
+    # 4) RAG 컨텍스트 구성 후 HyperCLOVA 답변 생성
+    context = _build_context(product, replacements)
+    response = await clova_client.chat_completion(
+        system_prompt=SYSTEM_PROMPTS["replacement"],
+        user_message=(
+            f"[검색 결과]\n{context}\n\n"
+            f"[질문]\n'{model_name}' 단종품의 대체품을 알려주세요."
+        ),
+        temperature=0.2,
+    )
+    return response
+
+
+def _build_context(product: Product, replacements: list) -> str:
+    lines = [
+        f"[단종 제품] {product.model_name}",
+        f"제조사: {product.manufacturer} | 시리즈: {product.series}",
+        f"카테고리: {product.category}",
+        f"단종일: {product.discontinued_date or '미확인'}",
+        "",
+    ]
+    for i, rep in enumerate(replacements, 1):
+        new = rep.new_product
+        lines.append(f"[대체 모델 {i}] {new.model_name}")
+        lines.append(f"제조사: {new.manufacturer} | 시리즈: {new.series}")
+        if new.specs:
+            s = new.specs
+            if s.input_voltage: lines.append(f"전원: {s.input_voltage}")
+            if s.io_points: lines.append(f"입출력: {s.io_points}")
+            if s.dimension_w:
+                lines.append(f"외형: {s.dimension_w}x{s.dimension_h}x{s.dimension_d}mm")
+        lines.append(f"단자대 호환: {'O' if rep.terminal_compatible else 'X'}")
+        lines.append(f"프로그램 변환: {'가능' if rep.program_convertible else '필요'}")
+        lines.append(f"외형 호환: {'O' if rep.dimension_compatible else 'X'}")
+        if rep.compatibility_notes:
+            lines.append(f"비고: {rep.compatibility_notes}")
+        lines.append("")
+    return "\n".join(lines)
