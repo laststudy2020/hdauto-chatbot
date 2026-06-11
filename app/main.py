@@ -5,6 +5,7 @@ from app.db.database import init_db
 from app.api.chatbot import router as chatbot_router
 from app.api.products import router as products_router
 from app.api.admin import router as admin_router
+from app.api.talktalk import router as talktalk_router
 from app.config import get_settings
 import logging
 
@@ -22,11 +23,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     description=(
-        "현대자동화 현대기전사 스마트스토어 챗봇 API\n\n"
-        "단종 대체품 | 규격 조회 | 고장 알람 진단 | "
-        "위치 안내 | 재고 알림 | 단가 비교"
+        "현대자동화 현대기전사 스마트스토어 챗봇 API v1.2\n\n"
+        "단종 대체품 | 규격 조회 | 고장 알람 | "
+        "위치 안내 | 재고 알림 | 단가 비교 | 네이버 톡톡 연동"
     ),
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
@@ -41,11 +42,12 @@ app.add_middleware(
 app.include_router(chatbot_router)
 app.include_router(products_router)
 app.include_router(admin_router)
+app.include_router(talktalk_router)
 
 
 @app.get("/", tags=["health"])
 async def root():
-    return {"app": settings.APP_NAME, "version": "1.1.0", "docs": "/docs"}
+    return {"app": settings.APP_NAME, "version": "1.2.0", "docs": "/docs"}
 
 
 @app.get("/health", tags=["health"])
