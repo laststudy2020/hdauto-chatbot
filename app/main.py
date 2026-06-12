@@ -6,6 +6,7 @@ from app.api.chatbot import router as chatbot_router
 from app.api.products import router as products_router
 from app.api.admin import router as admin_router
 from app.api.talktalk import router as talktalk_router
+from app.api.webchat import router as webchat_router
 from app.config import get_settings
 import logging
 
@@ -43,6 +44,7 @@ app.include_router(chatbot_router)
 app.include_router(products_router)
 app.include_router(admin_router)
 app.include_router(talktalk_router)
+app.include_router(webchat_router)
 
 
 @app.get("/", tags=["health"])
