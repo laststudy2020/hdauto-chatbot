@@ -91,7 +91,7 @@ async def import_products_csv(file: UploadFile = File(...), db: AsyncSession = D
             skipped += 1
             continue
         try:
-            status_val = row.get("status", "active").strip().upper()
+            status_val = row.get("status", "active").strip().lower()
             product = Product(
                 model_name=model,
                 series=row.get("series", "").strip() or None,
