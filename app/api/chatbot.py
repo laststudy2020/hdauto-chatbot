@@ -7,6 +7,7 @@ from app.services.replacement import find_replacement
 from app.services.specs import lookup_specs
 from app.services.location import get_location_response
 from app.services.inventory import get_inventory_status
+from app.services.alarm import diagnose_alarm
 from app.core.clova import clova_client, SYSTEM_PROMPTS
 import logging
 
@@ -70,22 +71,13 @@ async def _route(intent_result, message: str, db: AsyncSession) -> tuple[str, st
         ), "guide"
 
     if intent == Intent.ALARM:
-        alarm = intent_result.alarm_code
-        context = f"알람코드: {alarm}" if alarm else ""
-        if model:
-            context += f"\n제품 모델: {model}"
-        reply = await clova_client.chat_completion(
-            system_prompt=SYSTEM_PROMPTS["alarm"],
-            user_message=(
-                f"[증상 정보]\n{context or '(알람코드 미입력)'}\n\n"
-                f"[질문]\n{message}\n\n"
-                f"매뉴얼 DB는 Phase 2에서 연동 예정입니다. "
-                f"현재는 일반 FA 부품 지식으로 안내하되, "
-                f"반드시 공식 매뉴얼 확인을 권고해 주세요."
-            ),
-            temperature=0.2,
+        reply = await diagnose_alarm(
+            alarm_code=intent_result.alarm_code,
+            model_name=model,
+            user_message=message,
+            db=db,
         )
-        return reply, "clova"
+        return reply, "manual_db"
 
     if intent == Intent.LOCATION:
         return get_location_response(), "fixed"

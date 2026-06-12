@@ -102,11 +102,14 @@ async def talktalk_webhook(
     # ─── open: 대화 시작 ───
     if event_type == "open":
         welcome = (
-            "안녕하세요! HD AUTO 부품 도우미입니다.\n\n"
-            "FA 산업 자동화 부품(PLC·인버터·서보드라이브·센서·HMI) 관련\n"
-            "무엇이든 질문해 주세요!\n\n"
-            "단종 대체품 · 규격/사이즈 · 고장 알람 진단\n"
-            "재고 확인 · 위치 안내 가능합니다."
+            "안녕하세요! 현대자동화 AI 부품 도우미입니다 🤖\n\n"
+            "FA 산업 자동화 부품 전문 24시간 자동응답 서비스입니다.\n\n"
+            "아래 버튼을 누르거나 모델명을 바로 입력해 주세요!\n\n"
+            "🔄 단종 대체품 찾기 → 예) FX3U-32MT 대체품\n"
+            "📐 규격/사이즈 조회 → 예) FX5U-32MT 사이즈\n"
+            "⚠️ 고장 알람 진단 → 예) OC1 알람 원인\n"
+            "📦 재고 확인 → 예) FX5U-32MT 재고 있나요?\n"
+            "📍 위치 안내 → 예) 현대자동화 위치 알려줘"
         )
         quick = _make_quick_replies("open")
         await send_to_talktalk(user_id, welcome, authorization, quick)
