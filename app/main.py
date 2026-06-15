@@ -15,6 +15,9 @@ import gc
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
 
+# PDF 처리 라우터는 로컬 모드일 때만 활성화
+IS_LOCAL = settings.DATABASE_URL.startswith("sqlite")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -22,7 +25,7 @@ async def lifespan(app: FastAPI):
     logging.info("DB 초기화 완료")
     async with async_session() as db:
         await seed_if_empty(db)
-    gc.collect()  # 시드 후 즉시 메모리 정리
+    gc.collect()
     yield
 
 
@@ -47,15 +50,25 @@ app.include_router(admin_router)
 app.include_router(talktalk_router)
 app.include_router(webchat_router)
 
-# manual 라우터는 별도 import (pdfplumber 지연 로딩)
-from app.api.manual import router as manual_router
-app.include_router(manual_router)
+# 매뉴얼 업로드는 로컬에서만 활성화 (Render 메모리 절약)
+if IS_LOCAL:
+    from app.api.manual import router as manual_router
+    app.include_router(manual_router)
+    logging.info("매뉴얼 업로드 API 활성화 (로컬 모드)")
+else:
+    logging.info("매뉴얼 업로드 API 비활성화 (Render 모드 - 로컬에서 처리)")
 
 
 @app.get("/", tags=["health"])
 async def root():
-    return {"app": settings.APP_NAME, "version": "1.5.0",
-            "chat_ui": "/chat", "docs": "/docs"}
+    return {
+        "app": settings.APP_NAME,
+        "version": "1.5.0",
+        "mode": "local" if IS_LOCAL else "render",
+        "manual_upload": IS_LOCAL,
+        "chat_ui": "/chat",
+        "docs": "/docs"
+    }
 
 
 @app.get("/health", tags=["health"])
