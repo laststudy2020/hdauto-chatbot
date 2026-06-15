@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# 환경변수
+.env
+
+# DB
+*.db
+*.sqlite
+
+# 매뉴얼 PDF (용량 큰 파일)
+manuals/*.pdf
+manuals/*.PDF
+
+# 로그
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
