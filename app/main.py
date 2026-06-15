@@ -8,9 +8,9 @@ from app.api.products import router as products_router
 from app.api.admin import router as admin_router
 from app.api.talktalk import router as talktalk_router
 from app.api.webchat import router as webchat_router
-from app.api.manual import router as manual_router
 from app.config import get_settings
 import logging
+import gc
 
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
@@ -18,12 +18,11 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # DB 테이블 생성
     await init_db()
     logging.info("DB 초기화 완료")
-    # 비어있으면 기본 데이터 자동 복원
     async with async_session() as db:
         await seed_if_empty(db)
+    gc.collect()  # 시드 후 즉시 메모리 정리
     yield
 
 
@@ -47,6 +46,9 @@ app.include_router(products_router)
 app.include_router(admin_router)
 app.include_router(talktalk_router)
 app.include_router(webchat_router)
+
+# manual 라우터는 별도 import (pdfplumber 지연 로딩)
+from app.api.manual import router as manual_router
 app.include_router(manual_router)
 
 

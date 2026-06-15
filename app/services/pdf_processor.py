@@ -34,9 +34,9 @@ async def process_manual_pdf(
     }
 
     try:
-        import pdfplumber
-        import io
         import gc
+        import io
+        import pdfplumber  # 함수 호출 시에만 로딩 (메모리 절약)
 
         alarm_pages = []
         spec_pages = []
