@@ -1,7 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from app.db.database import init_db
+from app.db.database import init_db, async_session
+from app.db.seed import seed_if_empty
 from app.api.chatbot import router as chatbot_router
 from app.api.products import router as products_router
 from app.api.admin import router as admin_router
@@ -17,15 +18,19 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # DB 테이블 생성
     await init_db()
     logging.info("DB 초기화 완료")
+    # 비어있으면 기본 데이터 자동 복원
+    async with async_session() as db:
+        await seed_if_empty(db)
     yield
 
 
 app = FastAPI(
     title=settings.APP_NAME,
-    description="현대자동화 현대기전사 스마트스토어 챗봇 API v1.4",
-    version="1.4.0",
+    description="현대자동화 현대기전사 스마트스토어 챗봇 API v1.5",
+    version="1.5.0",
     lifespan=lifespan,
 )
 
@@ -47,12 +52,8 @@ app.include_router(manual_router)
 
 @app.get("/", tags=["health"])
 async def root():
-    return {
-        "app": settings.APP_NAME,
-        "version": "1.4.0",
-        "chat_ui": "/chat",
-        "docs": "/docs"
-    }
+    return {"app": settings.APP_NAME, "version": "1.5.0",
+            "chat_ui": "/chat", "docs": "/docs"}
 
 
 @app.get("/health", tags=["health"])
