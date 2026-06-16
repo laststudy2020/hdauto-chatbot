@@ -148,45 +148,11 @@ async def talktalk_webhook(
 
 
 async def _process_message(message: str, user_id: str, db: AsyncSession) -> str:
-    """메시지 처리 - chatbot.py 라우팅 로직과 동일"""
+    """메시지 처리 - chatbot.py _route 함수 직접 호출 (웹 검색 폴백 포함)"""
+    from app.api.chatbot import _route
     intent_result = classify_intent(message)
-    intent = intent_result.intent
-    model = intent_result.model_name
-
-    if intent == Intent.REPLACEMENT:
-        if model:
-            return await find_replacement(model, db)
-        return "어떤 모델의 대체품을 찾고 계신가요?\n모델명을 입력해 주세요.\n예) FX3U-32MT 대체품"
-
-    if intent == Intent.SPECS:
-        if model:
-            return await lookup_specs(model, db)
-        return "어떤 제품의 규격을 확인하고 싶으신가요?\n모델명을 입력해 주세요.\n예) FX5U-32MT 사이즈"
-
-    if intent == Intent.ALARM:
-        alarm = intent_result.alarm_code
-        context = f"알람코드: {alarm}" if alarm else ""
-        if model:
-            context += f"\n제품: {model}"
-        return await clova_client.chat_completion(
-            system_prompt=SYSTEM_PROMPTS["alarm"],
-            user_message=f"[증상 정보]\n{context or message}\n\n[질문]\n{message}",
-            temperature=0.2,
-        )
-
-    if intent == Intent.LOCATION:
-        return get_location_response()
-
-    if intent == Intent.STOCK:
-        if model:
-            return await get_inventory_status(model, db)
-        return "어떤 제품의 재고를 확인하고 싶으신가요?\n모델명을 입력해 주세요."
-
-    return await clova_client.chat_completion(
-        system_prompt=SYSTEM_PROMPTS["general"],
-        user_message=message,
-        temperature=0.5,
-    )
+    reply, source = await _route(intent_result, message, db)
+    return reply
 
 
 @router.get("/health", summary="톡톡 웹훅 연결 확인용")
