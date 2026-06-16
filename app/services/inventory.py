@@ -81,9 +81,8 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     rep_info = ""
 
     if product and product.status == ProductStatus.DISCONTINUED:
-        disc_info = f"\n⚠️ 단종 예정 제품입니다."
-        if replacement_info:
-            rep_info = replacement_info
+        disc_info = f"\n⚠️ 단종 제품입니다. 재고 소진 후 구매 불가."
+        rep_info = replacement_info  # 단종이면 대체품 항상 표시
 
     return (
         f"✅ '{inv.product.model_name}' 재고 있음{disc_info}"
