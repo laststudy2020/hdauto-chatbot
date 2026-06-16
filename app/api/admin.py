@@ -4,7 +4,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Inventory, Product
-from app.services.inventory import check_low_stock, send_slack_alert
+from app.services.inventory import check_low_stock
 from app.config import get_settings
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -56,7 +56,7 @@ async def trigger_stock_alert(
     alerts = await check_low_stock(db)
     if not alerts:
         return {"status": "ok", "message": "재고 부족 제품 없음"}
-    await send_slack_alert(alerts, slack_webhook_url)
+    pass  # 슬랙 알림은 inventory._notify_admin에서 처리
     return {"status": "sent", "count": len(alerts)}
 
 
