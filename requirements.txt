@@ -9,3 +9,5 @@ python-dotenv==1.0.1
 python-multipart==0.0.9
 pdfplumber==0.11.4
 pypdf==4.3.1
+asyncmy
+python-socks[asyncio]
