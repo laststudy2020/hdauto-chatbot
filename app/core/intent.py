@@ -6,7 +6,8 @@ from enum import Enum
 class Intent(str, Enum):
     REPLACEMENT = "replacement"      # 단종 대체품
     SPECS = "specs"                  # 규격/사이즈 (모델명 -> 사양)
-    SPEC_SEARCH = "spec_search"      # 사양 -> 모델명 (역검색)
+    SPEC_SEARCH = "spec_search"      # 사양 -> 모델명 (역검색, 인버터: 전압+kW)
+    SERVO_RECOMMEND = "servo_recommend"  # 서보 용량(W) -> 모델 추천
     ALARM = "alarm"                  # 고장 알람
     LOCATION = "location"            # 위치 안내
     STOCK = "stock"                  # 재고 문의
@@ -20,7 +21,8 @@ class IntentResult:
     model_name: str | None = None    # 추출된 모델명
     alarm_code: str | None = None    # 추출된 알람코드
     voltage_v: int | None = None     # 추출된 전압 (SPEC_SEARCH용)
-    capacity_kw: float | None = None  # 추출된 용량 kW (SPEC_SEARCH용)
+    capacity_kw: float | None = None  # 추출된 용량 kW (SPEC_SEARCH용, 인버터)
+    capacity_w: float | None = None   # 추출된 용량 W (SERVO_RECOMMEND용, 서보)
     confidence: float = 0.0
 
 
@@ -95,13 +97,17 @@ MODEL_PATTERNS = [
     r"[A-Z]{2,6}[\-]\w{2,20}",                      # FR-E740-0.75K
 ]
 
-# ─── 사양 기반 추천(SPEC_SEARCH) 패턴 ───
+# ─── 사양 기반 추천(SPEC_SEARCH) 패턴 — 인버터: 전압(V) + 용량(kW) ───
 VOLTAGE_PATTERN = r"(\d{2,3})\s*[Vv]"
 CAPACITY_PATTERN = r"(\d+(?:\.\d+)?)\s*[kK][wW]"
 SPEC_SEARCH_TRIGGERS = [
     "추천", "추천해", "추천해줘", "어떤 모델", "어떤 제품",
     "맞는 모델", "맞는 제품", "맞는 인버터", "골라", "찾아줘",
 ]
+
+# ─── 서보 용량 추천(SERVO_RECOMMEND) 패턴 — 용량(W)만으로 검색 ───
+# kW 표기와 겹치지 않도록 앞에 k/K가 오면 제외, 뒤에 추가 영문자가 오면 제외
+WATT_PATTERN = r"(?<![kK])(\d+(?:\.\d+)?)\s*[wW](?![a-zA-Z])"
 
 
 def classify_intent(message: str) -> IntentResult:
@@ -134,7 +140,7 @@ def classify_intent(message: str) -> IntentResult:
                 confidence=0.95,
             )
 
-    # 1.5) 사양 기반 추천 — 전압 + 용량 + 추천 트리거가 같이 있으면
+    # 1.5) 사양 기반 추천(인버터) — 전압 + 용량(kW) + 추천 트리거가 같이 있으면
     # ("kW", "전압" 등은 SPECS 키워드와도 겹치므로, 일반 키워드 매칭보다 먼저 체크해서 가로챈다)
     voltage_match = re.search(VOLTAGE_PATTERN, msg)
     capacity_match = re.search(CAPACITY_PATTERN, msg, re.IGNORECASE)
@@ -144,6 +150,15 @@ def classify_intent(message: str) -> IntentResult:
             intent=Intent.SPEC_SEARCH,
             voltage_v=int(voltage_match.group(1)),
             capacity_kw=float(capacity_match.group(1)),
+            confidence=0.9,
+        )
+
+    # 1.6) 서보 용량(W) 기반 추천 — 전압 구분이 없는 서보 시리즈는 용량(W)만으로 검색
+    watt_match = re.search(WATT_PATTERN, msg)
+    if watt_match and has_trigger:
+        return IntentResult(
+            intent=Intent.SERVO_RECOMMEND,
+            capacity_w=float(watt_match.group(1)),
             confidence=0.9,
         )
 

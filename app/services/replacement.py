@@ -56,10 +56,13 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
     replacements = result2.scalars().all()
 
     if not replacements:
-        return (
+        # 정식 대체품은 없어도 타사 참고 후보는 있을 수 있으므로 먼저 확인
+        cross_brand_note = _build_cross_brand_note(product)
+        base = (
             f"'{product.model_name}'은(는) 단종 제품이지만\n"
             f"등록된 대체품 정보가 없습니다. 현대자동화로 문의해 주세요."
         )
+        return base + cross_brand_note
 
     # 4) RAG 컨텍스트 구성 후 HyperCLOVA 답변 생성
     context = _build_context(product, replacements)
@@ -71,7 +74,33 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
         ),
         temperature=0.2,
     )
+
+    # 5) 타사 참고 후보 — 검증 안 된 참고정보이므로 AI 패러프레이즈 없이
+    #    고정 문구로 별도 섹션에 덧붙인다 (확정 대체품과 절대 혼동되지 않도록).
+    response += _build_cross_brand_note(product)
+
     return response
+
+
+def _build_cross_brand_note(product: Product) -> str:
+    """검증되지 않은 타사 참고 후보를 고정 포맷으로 반환 (없으면 빈 문자열)"""
+    if not product.specs or not product.specs.extra_specs:
+        return ""
+    alternatives = product.specs.extra_specs.get("cross_brand_alternatives")
+    if not alternatives:
+        return ""
+
+    lines = [
+        "\n\n---",
+        "📌 **타사 참고 후보** (당사가 사양을 검증한 정식 대체품이 아니며, "
+        "동일 용량대의 참고 정보입니다. 실제 적용 전 사양 확인이 필요합니다.)",
+    ]
+    for alt in alternatives:
+        manufacturer = alt.get("manufacturer", "미확인")
+        model = alt.get("model", "미확인")
+        note = alt.get("note", "사양 확인 필요")
+        lines.append(f"- {manufacturer} {model} ({note})")
+    return "\n".join(lines)
 
 
 def _build_context(product: Product, replacements: list) -> str:
@@ -99,6 +128,7 @@ def _build_context(product: Product, replacements: list) -> str:
             lines.append(f"비고: {rep.compatibility_notes}")
         lines.append("")
     return "\n".join(lines)
+
 
 async def register_replacement(
     old_model: str,
