@@ -167,7 +167,7 @@ async function callAPI(text){
     addBotMsg(data.reply||'죄송합니다. 잠시 후 다시 시도해 주세요.');
   }catch(e){
     removeTyping();
-    addBotMsg('일시적인 오류가 발생했습니다.\\n현대자동화(051-000-0000)로 문의해 주세요.');
+    addBotMsg('일시적인 오류가 발생했습니다.\\n현대자동화(010-3861-2030)로 문의해 주세요.');
   }
   isLoading=false;
   document.getElementById('sendBtn').style.opacity='1';
