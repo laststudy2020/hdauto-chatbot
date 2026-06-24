@@ -5,7 +5,8 @@ from enum import Enum
 
 class Intent(str, Enum):
     REPLACEMENT = "replacement"      # 단종 대체품
-    SPECS = "specs"                  # 규격/사이즈
+    SPECS = "specs"                  # 규격/사이즈 (모델명 -> 사양)
+    SPEC_SEARCH = "spec_search"      # 사양 -> 모델명 (역검색)
     ALARM = "alarm"                  # 고장 알람
     LOCATION = "location"            # 위치 안내
     STOCK = "stock"                  # 재고 문의
@@ -18,6 +19,8 @@ class IntentResult:
     intent: Intent
     model_name: str | None = None    # 추출된 모델명
     alarm_code: str | None = None    # 추출된 알람코드
+    voltage_v: int | None = None     # 추출된 전압 (SPEC_SEARCH용)
+    capacity_kw: float | None = None  # 추출된 용량 kW (SPEC_SEARCH용)
     confidence: float = 0.0
 
 
@@ -77,6 +80,14 @@ MODEL_PATTERNS = [
     r"[A-Z]{2,6}[\-]\w{2,20}",                      # FR-E740-0.75K
 ]
 
+# ─── 사양 기반 추천(SPEC_SEARCH) 패턴 ───
+VOLTAGE_PATTERN = r"(\d{2,3})\s*[Vv]"
+CAPACITY_PATTERN = r"(\d+(?:\.\d+)?)\s*[kK][wW]"
+SPEC_SEARCH_TRIGGERS = [
+    "추천", "추천해", "추천해줘", "어떤 모델", "어떤 제품",
+    "맞는 모델", "맞는 제품", "맞는 인버터", "골라", "찾아줘",
+]
+
 
 def classify_intent(message: str) -> IntentResult:
     """사용자 메시지에서 의도와 엔티티를 추출"""
@@ -95,6 +106,19 @@ def classify_intent(message: str) -> IntentResult:
                 model_name=model,
                 confidence=0.95,
             )
+
+    # 1.5) 사양 기반 추천 — 전압 + 용량 + 추천 트리거가 같이 있으면
+    # ("kW", "전압" 등은 SPECS 키워드와도 겹치므로, 일반 키워드 매칭보다 먼저 체크해서 가로챈다)
+    voltage_match = re.search(VOLTAGE_PATTERN, msg)
+    capacity_match = re.search(CAPACITY_PATTERN, msg, re.IGNORECASE)
+    has_trigger = any(t in msg for t in SPEC_SEARCH_TRIGGERS)
+    if voltage_match and capacity_match and has_trigger:
+        return IntentResult(
+            intent=Intent.SPEC_SEARCH,
+            voltage_v=int(voltage_match.group(1)),
+            capacity_kw=float(capacity_match.group(1)),
+            confidence=0.9,
+        )
 
     # 2) 키워드 매칭으로 의도 분류
     scores: dict[Intent, int] = {}

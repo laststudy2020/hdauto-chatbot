@@ -1,3 +1,4 @@
+from app.core.admin_commands import is_admin_command, handle_admin_command
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
@@ -8,6 +9,7 @@ from app.services.specs import lookup_specs
 from app.services.location import get_location_response
 from app.services.inventory import get_inventory_status
 from app.services.alarm import diagnose_alarm
+from app.services.spec_search import find_by_spec
 from app.services.web_search import search_and_answer
 from app.core.clova import clova_client, SYSTEM_PROMPTS
 import logging
@@ -22,6 +24,24 @@ COMPANY_PHONE = "051-000-0000"
 async def chat(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     message = request.message.strip()
     logger.info(f"[{request.channel}] 사용자({request.user_id}): {message}")
+
+    # ─── 관리자 등록 명령어 — 의도 분류기를 거치지 않고 바로 처리 ───
+    if is_admin_command(message):
+        try:
+            reply = await handle_admin_command(message, db)
+            source = "admin_command"
+        except Exception as e:
+            logger.error(f"관리자 명령 처리 오류: {e}", exc_info=True)
+            reply = "명령 처리 중 오류가 발생했습니다."
+            source = "error"
+        logger.info(f"응답 ({source}): {reply[:80]}...")
+        return ChatResponse(
+            reply=reply,
+            intent="admin_command",
+            model_name=None,
+            confidence=1.0,
+            source=source,
+        )
 
     intent_result = classify_intent(message)
     logger.info(
@@ -93,6 +113,13 @@ async def _route(intent_result, message: str, db: AsyncSession) -> tuple[str, st
                 return await _web_fallback(f"{model} 규격 사양 치수 스펙 FA 부품", "specs")
             return db_reply, "db"
         return "어떤 제품의 규격을 확인하고 싶으신가요?\n모델명을 입력해 주세요.\n예) FX5U-32MT 사이즈", "guide"
+    
+    # ─── 사양으로 모델 추천 (역검색) ───
+    if intent == Intent.SPEC_SEARCH:
+        db_reply = await find_by_spec(
+            intent_result.voltage_v, intent_result.capacity_kw, db
+        )
+        return db_reply, "db_spec_search"
 
     # ─── 고장 알람 ───
     if intent == Intent.ALARM:

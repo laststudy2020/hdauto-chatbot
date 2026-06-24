@@ -23,3 +23,6 @@ manuals/*.PDF
 # OS
 .DS_Store
 Thumbs.db
+.env 
+__pycache__/ 
+*.pyc 

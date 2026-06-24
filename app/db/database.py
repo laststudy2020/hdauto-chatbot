@@ -4,7 +4,13 @@ from app.config import get_settings
 
 settings = get_settings()
 
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=False,
+    pool_recycle=280,      # 280초 이상 안 쓴 연결은 자동으로 폐기 후 재생성
+    pool_size=5,
+    max_overflow=2,
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

@@ -99,3 +99,61 @@ def _build_context(product: Product, replacements: list) -> str:
             lines.append(f"비고: {rep.compatibility_notes}")
         lines.append("")
     return "\n".join(lines)
+
+async def register_replacement(
+    old_model: str,
+    new_model: str,
+    notes: str | None,
+    db: AsyncSession,
+) -> str:
+    """채팅 명령어로 단종→대체품 매핑을 등록 (없는 모델명은 새로 생성)"""
+    old_product = await _get_or_create_product(old_model, db, mark_discontinued=True)
+    new_product = await _get_or_create_product(new_model, db, mark_discontinued=False)
+
+    stmt = select(Replacement).where(
+        Replacement.old_model_id == old_product.id,
+        Replacement.new_model_id == new_product.id,
+    )
+    result = await db.execute(stmt)
+    existing = result.scalars().first()
+
+    if existing:
+        if notes:
+            existing.compatibility_notes = notes
+            await db.commit()
+            return f"기존 매핑을 갱신했습니다: {old_product.model_name} → {new_product.model_name}"
+        return f"이미 등록된 매핑입니다: {old_product.model_name} → {new_product.model_name}"
+
+    replacement = Replacement(
+        old_model_id=old_product.id,
+        new_model_id=new_product.id,
+        compatibility_notes=notes,
+    )
+    db.add(replacement)
+    await db.commit()
+    return f"등록 완료: {old_product.model_name} → {new_product.model_name}"
+
+
+async def _get_or_create_product(
+    model_name: str, db: AsyncSession, mark_discontinued: bool
+) -> Product:
+    stmt = select(Product).where(Product.model_name == model_name)
+    result = await db.execute(stmt)
+    product = result.scalars().first()
+
+    if product:
+        if mark_discontinued and product.status != ProductStatus.DISCONTINUED:
+            product.status = ProductStatus.DISCONTINUED
+            await db.commit()
+        return product
+
+    product = Product(
+        model_name=model_name,
+        manufacturer="미확인",
+        category="미확인",
+        status=ProductStatus.DISCONTINUED if mark_discontinued else ProductStatus.ACTIVE,
+    )
+    db.add(product)
+    await db.commit()
+    await db.refresh(product)
+    return product
