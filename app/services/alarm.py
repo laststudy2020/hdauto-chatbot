@@ -9,14 +9,15 @@ async def diagnose_alarm(
     model_name: str = None,
     user_message: str = "",
     db: AsyncSession = None
-) -> str:
-    """알람코드 진단 - DB 매뉴얼 우선, 없으면 일반 지식"""
+) -> tuple[str, bool]:
+    """알람코드 진단 - DB 매뉴얼 우선, 없으면 일반 지식
+    Returns: (reply, matched_in_db)
+    """
 
     db_context = ""
-    source = "general"
+    matched = False
 
     if db and (alarm_code or model_name):
-        # DB에서 알람코드 검색
         conditions = []
         if alarm_code:
             conditions.append(AlarmCode.alarm_code.ilike(f"%{alarm_code}%"))
@@ -36,10 +37,9 @@ async def diagnose_alarm(
                     f"출처: {a.manual_filename or '매뉴얼'} p.{a.manual_page}"
                     for a in alarms
                 ])
-                source = "manual_db"
+                matched = True
 
     if db_context:
-        # 매뉴얼 기반 답변
         reply = await clova_client.chat_completion(
             system_prompt=SYSTEM_PROMPTS["alarm"],
             user_message=(
@@ -49,7 +49,6 @@ async def diagnose_alarm(
             temperature=0.1,
         )
     else:
-        # 일반 지식 기반 답변
         reply = await clova_client.chat_completion(
             system_prompt=SYSTEM_PROMPTS["alarm"],
             user_message=(
@@ -64,4 +63,4 @@ async def diagnose_alarm(
             temperature=0.2,
         )
 
-    return reply
+    return reply, matched

@@ -124,12 +124,12 @@ async def _route(intent_result, message: str, db: AsyncSession) -> tuple[str, st
     # ─── 고장 알람 ───
     if intent == Intent.ALARM:
         alarm = intent_result.alarm_code
-        db_reply = await diagnose_alarm(
+        db_reply, matched = await diagnose_alarm(
             alarm_code=alarm, model_name=model,
             user_message=message, db=db,
         )
-        if "등록되지 않았습니다" in db_reply or "아직 등록" in db_reply:
-            logger.info(f"DB 없음 → 웹검색: {alarm} 알람")
+        if not matched:
+            logger.info(f"DB 매칭 실패 → 웹검색: {alarm} 알람")
             search_q = f"{model or 'FA 인버터 서보'} {alarm or message} 알람 원인 해결방법"
             return await _web_fallback(search_q, "alarm")
         return db_reply, "db_alarm"

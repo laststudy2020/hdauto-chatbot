@@ -58,7 +58,22 @@ INTENT_KEYWORDS = {
     ],
 }
 
-# ─── 알람코드 패턴 (정규식) ───
+# ─── LS iG5A 전용 알람코드 (매뉴얼 검증완료, 정확매칭 — 최우선 체크) ───
+# 추측성 정규식(ALARM_PATTERNS)보다 먼저 검사한다.
+# 대소문자 무관, 영문자에 바로 인접하지 않을 때만 매칭(단어 경계 대신
+# 라틴 알파벳 인접 여부로 판단 — 한글과는 공백 없이 붙어도 정상 인식되도록).
+IG5A_ALARM_CODES = [
+    "OCt", "OC2", "GFt", "IOL", "OLt", "OHt", "POt", "Out", "Lut",
+    "EtH", "COL", "FLtL", "EEP", "Hvt", "Err", "rErr", "COm", "FAn",
+    "ESt", "EtA", "Etb", "ntC", "nbr",
+]
+_IG5A_CODE_MAP = {c.upper(): c for c in IG5A_ALARM_CODES}  # 매칭 결과 -> 원표기 복원
+_IG5A_ALT = "|".join(
+    sorted((re.escape(c.upper()) for c in IG5A_ALARM_CODES), key=len, reverse=True)
+)
+IG5A_ALARM_PATTERN = rf"(?<![A-Za-z])(?:{_IG5A_ALT})(?![A-Za-z])"
+
+# ─── 알람코드 패턴 (정규식, 미쓰비시 등 기타 제품군) ───
 ALARM_PATTERNS = [
     r"AL[\.\-]?\s*[A-Z]?\d+",         # AL.E7, AL-17, AL.32
     r"[Ee]rr[\.\-]?\s*\d+",           # Err-04, Err.12
@@ -94,7 +109,19 @@ def classify_intent(message: str) -> IntentResult:
     msg = message.strip()
     msg_upper = msg.upper()
 
-    # 1) 알람코드 패턴 먼저 체크 (가장 명확한 시그널)
+    # 0) iG5A 전용 알람코드 정확매칭 (최우선 — 매뉴얼 검증된 코드)
+    ig5a_match = re.search(IG5A_ALARM_PATTERN, msg_upper)
+    if ig5a_match:
+        alarm_code = _IG5A_CODE_MAP.get(ig5a_match.group(), ig5a_match.group())
+        model = _extract_model(msg)
+        return IntentResult(
+            intent=Intent.ALARM,
+            alarm_code=alarm_code,
+            model_name=model,
+            confidence=0.97,
+        )
+
+    # 1) 알람코드 패턴 체크 (그 외 제품군 — 미쓰비시 등)
     for pattern in ALARM_PATTERNS:
         match = re.search(pattern, msg_upper)
         if match:
