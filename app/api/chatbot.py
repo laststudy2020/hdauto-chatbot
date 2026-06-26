@@ -18,7 +18,7 @@ import logging
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chatbot"])
 
-COMPANY_PHONE = "051-000-0000"
+COMPANY_PHONE = "010-3861-2030"
 
 
 @router.post("/", response_model=ChatResponse)
