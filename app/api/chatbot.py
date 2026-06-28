@@ -99,7 +99,11 @@ async def _route(intent_result, message: str, db: AsyncSession) -> tuple[str, st
     if intent == Intent.REPLACEMENT:
         if model:
             db_reply = await find_replacement(model, db)
-            if "찾지 못했습니다" in db_reply or "등록된 대체품 정보가 없습니다" in db_reply:
+            # "찾지 못했습니다" = Product/모터 매칭 자체가 실패한 경우만 웹검색으로 폴백.
+            # "등록된 대체품 정보가 없습니다" 케이스는 find_replacement가 이미 타사 참고후보
+            # +서보 호환정보를 자체적으로 채워서 반환하므로 여기서 또 웹검색으로 덮어쓰지 않음
+            # (웹검색 AI가 근거없는 "대체품"을 지어낼 위험이 있어 — 위에서 실제로 한 번 발생함).
+            if "찾지 못했습니다" in db_reply:
                 logger.info(f"DB 없음 → 웹검색: {model} 대체품")
                 return await _web_fallback(f"{model} 단종 대체품 FA 부품", "replacement")
             return db_reply, "db"

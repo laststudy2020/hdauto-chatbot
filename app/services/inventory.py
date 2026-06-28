@@ -5,6 +5,7 @@ from app.db.models import Inventory, Product, Replacement, ProductStatus
 from app.config import get_settings
 from app.services.web_search import search_and_answer
 from app.services.naver_commerce import get_live_stock_quantity, NaverCommerceError
+from app.services.servo_spec_search import get_servo_companion_note
 import httpx
 import logging
 
@@ -82,8 +83,12 @@ async def get_stock_state(product: Product, db: AsyncSession) -> dict:
 async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     """재고 조회 → 재고있음/부족/없음 + 단종여부 + 대체품 안내"""
 
-    # 1) 제품 정보 조회
-    prod_stmt = select(Product).where(Product.model_name.ilike(f"%{model_name}%"))
+    # 1) 제품 정보 조회 (specs eager load — 서보 호환정보 조회에 필요)
+    prod_stmt = (
+        select(Product)
+        .options(selectinload(Product.specs))
+        .where(Product.model_name.ilike(f"%{model_name}%"))
+    )
     prod_result = await db.execute(prod_stmt)
     product = prod_result.scalars().first()
 
@@ -108,6 +113,21 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     else:
         stock = {"quantity": 0, "source": "db", "state": "out_of_stock", "min_threshold": 0}
 
+    # 3-1) 서보 계열이면 호환 가능한 짝(드라이브↔모터) 정보
+    companion_note = await get_servo_companion_note(product, model_name, db)
+
+    # 3-2) Product 행이 없는데 모터로 식별된 경우 — "단종된 우리 제품"이 아니라
+    #      그냥 별도 재고관리 대상이 아닌 것뿐이므로, 관리자알림/단종웹검색 같은
+    #      엉뚱한 흐름을 타지 않고 여기서 바로 전용 응답으로 끝낸다.
+    #      (웹검색 fallback은 AI가 근거없는 "대체품"을 지어낼 위험이 있어 모터 케이스엔 안 씀)
+    if not product and companion_note:
+        return (
+            f"'{model_name}'은(는) 당사 카탈로그에 별도 등록된 모델은 아니지만, "
+            f"서보모터로 확인됩니다.{companion_note}\n\n"
+            f"📞 정확한 재고/사양은 현대자동화로 문의해 주세요.\n"
+            f"☎️ {COMPANY_PHONE}"
+        )
+
     # 4) 재고 없음 (DB/매칭 실패 포함)
     if stock["state"] == "out_of_stock":
         # 관리자 알림 발송
@@ -131,7 +151,7 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
 
         return (
             f"📦 '{product_name}' 재고 없음{disc_info}"
-            f"{replacement_info}\n\n"
+            f"{replacement_info}{companion_note}\n\n"
             f"📞 현대자동화에 연락주시면 재고 파악과 대체품 안내해드리겠습니다.\n"
             f"☎️ {COMPANY_PHONE}"
         )
@@ -147,7 +167,7 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     if stock["state"] == "low_stock":
         return (
             f"⏳ '{product_name}' 재고 {stock['quantity']}개 남음 (소진 임박){disc_info}"
-            f"{rep_info}\n\n"
+            f"{rep_info}{companion_note}\n\n"
             f"🛒 서두르시는 걸 추천드려요 — 스마트스토어에서 바로 구매 가능합니다.\n"
             f"{STORE_URL}"
         )
@@ -155,7 +175,7 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     # 6) 재고 있음
     return (
         f"✅ '{product_name}' 재고 있음{disc_info}"
-        f"{rep_info}\n\n"
+        f"{rep_info}{companion_note}\n\n"
         f"🛒 스마트스토어에서 바로 구매 가능합니다.\n"
         f"{STORE_URL}"
     )

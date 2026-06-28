@@ -31,35 +31,25 @@ index 730d00a..6c424c3 100644
      DEFAULT_STOCK_THRESHOLD: int = 3
      PRICE_DIFF_THRESHOLD: float = 10.0
 diff --git a/app/services/inventory.py b/app/services/inventory.py
-index b1c21ef..443f0d9 100644
+index b1c21ef..4b19ca9 100644
 --- a/app/services/inventory.py
 +++ b/app/services/inventory.py
-@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
+@@ -4,6 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
  from app.db.models import Inventory, Product, Replacement, ProductStatus
  from app.config import get_settings
  from app.services.web_search import search_and_answer
 +from app.services.naver_commerce import get_live_stock_quantity, NaverCommerceError
++from app.services.servo_spec_search import get_servo_companion_note
  import httpx
  import logging
  
-@@ -14,25 +15,79 @@ COMPANY_PHONE = "010-3861-2030"
+@@ -14,25 +16,83 @@ COMPANY_PHONE = "010-3861-2030"
  STORE_URL = "https://smartstore.naver.com/hdauto22"
  
  
--async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
--    """재고 조회 → 재고있음/없음 + 단종여부 + 대체품 안내"""
 +async def _resolve_stock_quantity(product: Product | None, inv: Inventory | None) -> tuple[int, str]:
 +    """재고 수량의 단일 진입점.
- 
--    # 1) 재고 DB 조회
--    stmt = (
--        select(Inventory)
--        .options(selectinload(Inventory.product))
--        .join(Product)
--        .where(Product.model_name.ilike(f"%{model_name}%"))
--    )
--    result = await db.execute(stmt)
--    inv = result.scalars().first()
++
 +    오늘(DB 기준): NAVER_COMMERCE_ENABLED=False 라서 항상 DB 값(inv.current_stock) 반환.
 +    월요일(API 연동 후): NAVER_COMMERCE_ENABLED=True + smartstore_product_id가 있으면
 +    네이버 커머스API로 실시간 조회. 실패 시 예외를 잡아 DB 값으로 자동 폴백.
@@ -95,8 +85,7 @@ index b1c21ef..443f0d9 100644
 +    이 함수를 STOCK 의도(get_inventory_status)와 REPLACEMENT 의도(find_replacement)
 +    양쪽에서 공통으로 써서, "재고 있어요?"든 "이거 단종됐나요?"든 질문 문구가 달라도
 +    항상 같은 재고 판단(재고있음/부족/없음)이 나오게 한다.
- 
--    # 2) 제품 정보 조회 (단종 여부)
++
 +    Returns: {"quantity": int, "source": "naver"|"db",
 +              "state": "in_stock"|"low_stock"|"out_of_stock", "min_threshold": int}
 +    """
@@ -122,11 +111,26 @@ index b1c21ef..443f0d9 100644
 +    }
 +
 +
-+async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
+ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
+-    """재고 조회 → 재고있음/없음 + 단종여부 + 대체품 안내"""
 +    """재고 조회 → 재고있음/부족/없음 + 단종여부 + 대체품 안내"""
-+
-+    # 1) 제품 정보 조회
-     prod_stmt = select(Product).where(Product.model_name.ilike(f"%{model_name}%"))
+ 
+-    # 1) 재고 DB 조회
+-    stmt = (
+-        select(Inventory)
+-        .options(selectinload(Inventory.product))
+-        .join(Product)
++    # 1) 제품 정보 조회 (specs eager load — 서보 호환정보 조회에 필요)
++    prod_stmt = (
++        select(Product)
++        .options(selectinload(Product.specs))
+         .where(Product.model_name.ilike(f"%{model_name}%"))
+     )
+-    result = await db.execute(stmt)
+-    inv = result.scalars().first()
+-
+-    # 2) 제품 정보 조회 (단종 여부)
+-    prod_stmt = select(Product).where(Product.model_name.ilike(f"%{model_name}%"))
      prod_result = await db.execute(prod_stmt)
      product = prod_result.scalars().first()
  
@@ -135,7 +139,7 @@ index b1c21ef..443f0d9 100644
      replacement_info = ""
      if product:
          rep_stmt = (
-@@ -46,10 +101,15 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
+@@ -46,10 +106,18 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
              rep_names = ", ".join(r.new_product.model_name for r in replacements[:2])
              replacement_info = f"\n\n🔄 대체 추천 모델: {rep_names}"
  
@@ -149,12 +153,21 @@ index b1c21ef..443f0d9 100644
 +    else:
 +        stock = {"quantity": 0, "source": "db", "state": "out_of_stock", "min_threshold": 0}
  
++    # 3-1) 서보 계열이면 호환 가능한 짝(드라이브↔모터) 정보 — 모든 분기 공통으로 덧붙임
++    companion_note = await get_servo_companion_note(product, model_name, db)
++
 +    # 4) 재고 없음 (DB/매칭 실패 포함)
 +    if stock["state"] == "out_of_stock":
          # 관리자 알림 발송
          await _notify_admin(product_name)
  
-@@ -76,16 +136,25 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
+@@ -71,22 +139,31 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
+ 
+         return (
+             f"📦 '{product_name}' 재고 없음{disc_info}"
+-            f"{replacement_info}\n\n"
++            f"{replacement_info}{companion_note}\n\n"
+             f"📞 현대자동화에 연락주시면 재고 파악과 대체품 안내해드리겠습니다.\n"
              f"☎️ {COMPANY_PHONE}"
          )
  
@@ -171,7 +184,7 @@ index b1c21ef..443f0d9 100644
 +    if stock["state"] == "low_stock":
 +        return (
 +            f"⏳ '{product_name}' 재고 {stock['quantity']}개 남음 (소진 임박){disc_info}"
-+            f"{rep_info}\n\n"
++            f"{rep_info}{companion_note}\n\n"
 +            f"🛒 서두르시는 걸 추천드려요 — 스마트스토어에서 바로 구매 가능합니다.\n"
 +            f"{STORE_URL}"
 +        )
@@ -179,23 +192,41 @@ index b1c21ef..443f0d9 100644
 +    # 6) 재고 있음
      return (
 -        f"✅ '{inv.product.model_name}' 재고 있음{disc_info}"
+-        f"{rep_info}\n\n"
 +        f"✅ '{product_name}' 재고 있음{disc_info}"
-         f"{rep_info}\n\n"
++        f"{rep_info}{companion_note}\n\n"
          f"🛒 스마트스토어에서 바로 구매 가능합니다.\n"
          f"{STORE_URL}"
+     )
 diff --git a/app/services/replacement.py b/app/services/replacement.py
-index 8cab524..23a0240 100644
+index 8cab524..ce72726 100644
 --- a/app/services/replacement.py
 +++ b/app/services/replacement.py
-@@ -3,6 +3,7 @@ from sqlalchemy.orm import selectinload
+@@ -3,6 +3,8 @@ from sqlalchemy.orm import selectinload
  from sqlalchemy.ext.asyncio import AsyncSession
  from app.db.models import Product, Replacement, Specification, ProductStatus
  from app.core.clova import clova_client, SYSTEM_PROMPTS
 +from app.services.inventory import get_stock_state, COMPANY_PHONE
++from app.services.servo_spec_search import get_servo_companion_note
  
  
  async def find_replacement(model_name: str, db: AsyncSession) -> str:
-@@ -26,8 +27,12 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
+@@ -21,13 +23,28 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
+     product = result.scalars().first()
+ 
+     if not product:
++        # 정식 Product 행이 없어도 서보모터일 가능성이 있음 — 드라이브쪽 호환모터
++        # 리스트에서 역검색해서 호환 드라이브를 안내 (모터는 카탈로그에 단독 등록 안 함)
++        companion_note = await get_servo_companion_note(None, model_name, db)
++        if companion_note:
++            return (
++                f"'{model_name}'은(는) 당사 카탈로그에 별도 등록된 모델은 아니지만, "
++                f"서보모터로 확인됩니다.{companion_note}\n\n"
++                f"📞 정확한 재고/사양은 현대자동화로 문의해 주세요.\n"
++                f"☎️ {COMPANY_PHONE}"
++            )
+         return (
+             f"'{model_name}' 모델 정보를 찾지 못했습니다.\n"
              f"정확한 모델명을 확인하시거나 현대자동화로 문의해 주세요."
          )
  
@@ -205,11 +236,12 @@ index 8cab524..23a0240 100644
 +    #     STOCK 의도로 물었을 때와 다른 답을 줄 수 있음 — get_stock_state로 통일)
      if product.status == ProductStatus.ACTIVE:
 +        stock = await get_stock_state(product, db)
++        companion_note = await get_servo_companion_note(product, model_name, db)
 +
          spec_info = ""
          if product.specs:
              s = product.specs
-@@ -38,6 +43,22 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
+@@ -38,10 +55,28 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
                  parts.append(f"외형: {s.dimension_w}x{s.dimension_h}x{s.dimension_d}mm")
              if parts:
                  spec_info = "\n" + " | ".join(parts)
@@ -217,7 +249,8 @@ index 8cab524..23a0240 100644
 +        if stock["state"] == "out_of_stock":
 +            return (
 +                f"'{product.model_name}'은(는) 단종된 제품은 아니지만, 현재 일시 재고 없음 상태입니다.\n"
-+                f"제조사: {product.manufacturer} | 시리즈: {product.series}{spec_info}\n\n"
++                f"제조사: {product.manufacturer} | 시리즈: {product.series}{spec_info}"
++                f"{companion_note}\n\n"
 +                f"📞 입고 일정은 현대자동화로 문의해 주세요.\n"
 +                f"☎️ {COMPANY_PHONE}"
 +            )
@@ -227,11 +260,111 @@ index 8cab524..23a0240 100644
 +                f"'{product.model_name}'은(는) 현재 정상 판매 중이며, "
 +                f"재고 {stock['quantity']}개 남았습니다 (소진 임박).\n"
 +                f"제조사: {product.manufacturer} | 시리즈: {product.series}{spec_info}"
++                f"{companion_note}"
 +            )
 +
          return (
              f"'{product.model_name}'은(는) 현재 정상 판매 중입니다.\n"
              f"제조사: {product.manufacturer} | 시리즈: {product.series}"
+-            f"{spec_info}"
++            f"{spec_info}{companion_note}"
+         )
+ 
+     # 3) 단종 → 대체품 검색
+@@ -58,11 +93,12 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
+     if not replacements:
+         # 정식 대체품은 없어도 타사 참고 후보는 있을 수 있으므로 먼저 확인
+         cross_brand_note = _build_cross_brand_note(product)
++        companion_note = await get_servo_companion_note(product, model_name, db)
+         base = (
+             f"'{product.model_name}'은(는) 단종 제품이지만\n"
+             f"등록된 대체품 정보가 없습니다. 현대자동화로 문의해 주세요."
+         )
+-        return base + cross_brand_note
++        return base + cross_brand_note + companion_note
+ 
+     # 4) RAG 컨텍스트 구성 후 HyperCLOVA 답변 생성
+     context = _build_context(product, replacements)
+@@ -78,6 +114,7 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
+     # 5) 타사 참고 후보 — 검증 안 된 참고정보이므로 AI 패러프레이즈 없이
+     #    고정 문구로 별도 섹션에 덧붙인다 (확정 대체품과 절대 혼동되지 않도록).
+     response += _build_cross_brand_note(product)
++    response += await get_servo_companion_note(product, model_name, db)
+ 
+     return response
+ 
+diff --git a/app/services/servo_spec_search.py b/app/services/servo_spec_search.py
+index 34cf367..d34ecb6 100644
+--- a/app/services/servo_spec_search.py
++++ b/app/services/servo_spec_search.py
+@@ -4,7 +4,6 @@ from sqlalchemy import select, or_
+ from sqlalchemy.orm import selectinload
+ from sqlalchemy.ext.asyncio import AsyncSession
+ from app.db.models import Product, Specification, Replacement, ProductStatus
+-from app.services.replacement import find_replacement
+ 
+ _KNOWN_CAPACITIES_W = [50, 100, 200, 400, 500, 600, 750, 1000, 1500, 2000, 3000, 3500, 5000, 6000, 7000, 7500, 11000, 15000]
+ 
+@@ -94,6 +93,37 @@ def _comparison_list(matches: list, capacity_w: float) -> str:
+     return "\n\n".join(parts)
+ 
+ 
++async def get_servo_companion_note(
++    product: Product | None, model_name: str, db: AsyncSession
++) -> str:
++    """서보 계열 문의면 호환 가능한 짝(드라이브↔모터) 정보를 짧게 반환.
++
++    - product가 서보드라이브(category=='servo')면 → 호환 서보모터 한 줄
++    - product가 없거나 서보드라이브가 아니면 → model_name이 모터일 가능성을 역검색해서
++      호환 서보드라이브 안내
++    - 해당사항 없으면 빈 문자열 ("" + 다른 문자열 합쳐도 안전하도록)
++
++    get_inventory_status(STOCK), find_replacement(REPLACEMENT) 양쪽에서 공통으로 써서,
++    어느 의도로 들어와도 드라이브↔모터 짝 정보가 빠지지 않게 한다.
++    """
++    if product and product.category == "servo":
++        if product.specs and product.specs.extra_specs:
++            motor_text = _motor_text(product.specs)
++            if motor_text and motor_text != "-":
++                return f"\n\n🔩 호환 서보모터: {motor_text}"
++        return ""
++
++    # product가 없거나 서보드라이브가 아님 → 모터일 가능성으로 역검색
++    drive_match = await find_drives_compatible_with_motor(model_name, db)
++    if drive_match:
++        drive_names = [line for line in drive_match.split("\n") if line.startswith("- ")]
++        if drive_names:
++            joined = ", ".join(d[2:] for d in drive_names)
++            return f"\n\n⚙️ 호환 서보드라이브: {joined}"
++
++    return ""
++
++
+ async def find_servo_drive_details(model_name: str, db: AsyncSession) -> str | None:
+     """서보드라이브 모델명 검색 시 단종여부+대체품, 호환모터, 타사 동일용량 비교를 한 번에 안내.
+     DB에 없거나 category가 'servo'가 아니면 None을 반환해 일반 SPECS 조회로 넘어가게 한다."""
+@@ -115,15 +145,15 @@ async def find_servo_drive_details(model_name: str, db: AsyncSession) -> str | N
+ 
+     sections = []
+ 
+-    # 1) 단종여부 + 대체품 + 타사 참고후보 (기존 find_replacement 재사용)
++    # 1) 단종여부 + 대체품 + 타사 참고후보 + 호환모터 (find_replacement가 이제
++    #    get_servo_companion_note로 호환모터 정보를 자체 포함하므로 여기서 따로 안 붙임)
++    #    지연 임포트: replacement.py가 inventory.py를 참조하고 inventory.py가
++    #    이 모듈을 참조하는 순환참조를 피하기 위해 함수 내부에서 임포트.
++    from app.services.replacement import find_replacement
+     replacement_info = await find_replacement(model_name, db)
+     sections.append(replacement_info)
+ 
+-    # 2) 호환 서보모터
+-    if product.specs and product.specs.extra_specs:
+-        sections.append(f"🔩 **호환 서보모터**\n{_motor_text(product.specs)}")
+-
+-    # 3) 타 제조사 동일 용량 비교
++    # 2) 타 제조사 동일 용량 비교
+     capacity_w = (
+         product.specs.extra_specs.get("capacity_w")
+         if product.specs and product.specs.extra_specs else None
 diff --git a/requirements.txt b/requirements.txt
 index aa034c4..0dc42ca 100644
 --- a/requirements.txt

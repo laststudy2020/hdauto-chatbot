@@ -4,7 +4,6 @@ from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Product, Specification, Replacement, ProductStatus
-from app.services.replacement import find_replacement
 
 _KNOWN_CAPACITIES_W = [50, 100, 200, 400, 500, 600, 750, 1000, 1500, 2000, 3000, 3500, 5000, 6000, 7000, 7500, 11000, 15000]
 
@@ -94,6 +93,37 @@ def _comparison_list(matches: list, capacity_w: float) -> str:
     return "\n\n".join(parts)
 
 
+async def get_servo_companion_note(
+    product: Product | None, model_name: str, db: AsyncSession
+) -> str:
+    """서보 계열 문의면 호환 가능한 짝(드라이브↔모터) 정보를 짧게 반환.
+
+    - product가 서보드라이브(category=='servo')면 → 호환 서보모터 한 줄
+    - product가 없거나 서보드라이브가 아니면 → model_name이 모터일 가능성을 역검색해서
+      호환 서보드라이브 안내
+    - 해당사항 없으면 빈 문자열 ("" + 다른 문자열 합쳐도 안전하도록)
+
+    get_inventory_status(STOCK), find_replacement(REPLACEMENT) 양쪽에서 공통으로 써서,
+    어느 의도로 들어와도 드라이브↔모터 짝 정보가 빠지지 않게 한다.
+    """
+    if product and product.category == "servo":
+        if product.specs and product.specs.extra_specs:
+            motor_text = _motor_text(product.specs)
+            if motor_text and motor_text != "-":
+                return f"\n\n🔩 호환 서보모터: {motor_text}"
+        return ""
+
+    # product가 없거나 서보드라이브가 아님 → 모터일 가능성으로 역검색
+    drive_match = await find_drives_compatible_with_motor(model_name, db)
+    if drive_match:
+        drive_names = [line for line in drive_match.split("\n") if line.startswith("- ")]
+        if drive_names:
+            joined = ", ".join(d[2:] for d in drive_names)
+            return f"\n\n⚙️ 호환 서보드라이브: {joined}"
+
+    return ""
+
+
 async def find_servo_drive_details(model_name: str, db: AsyncSession) -> str | None:
     """서보드라이브 모델명 검색 시 단종여부+대체품, 호환모터, 타사 동일용량 비교를 한 번에 안내.
     DB에 없거나 category가 'servo'가 아니면 None을 반환해 일반 SPECS 조회로 넘어가게 한다."""
@@ -115,15 +145,15 @@ async def find_servo_drive_details(model_name: str, db: AsyncSession) -> str | N
 
     sections = []
 
-    # 1) 단종여부 + 대체품 + 타사 참고후보 (기존 find_replacement 재사용)
+    # 1) 단종여부 + 대체품 + 타사 참고후보 + 호환모터 (find_replacement가 이제
+    #    get_servo_companion_note로 호환모터 정보를 자체 포함하므로 여기서 따로 안 붙임)
+    #    지연 임포트: replacement.py가 inventory.py를 참조하고 inventory.py가
+    #    이 모듈을 참조하는 순환참조를 피하기 위해 함수 내부에서 임포트.
+    from app.services.replacement import find_replacement
     replacement_info = await find_replacement(model_name, db)
     sections.append(replacement_info)
 
-    # 2) 호환 서보모터
-    if product.specs and product.specs.extra_specs:
-        sections.append(f"🔩 **호환 서보모터**\n{_motor_text(product.specs)}")
-
-    # 3) 타 제조사 동일 용량 비교
+    # 2) 타 제조사 동일 용량 비교
     capacity_w = (
         product.specs.extra_specs.get("capacity_w")
         if product.specs and product.specs.extra_specs else None
