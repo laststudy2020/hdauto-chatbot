@@ -3,6 +3,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Product, Replacement, Specification, ProductStatus
 from app.core.clova import clova_client, SYSTEM_PROMPTS
+from app.services.inventory import get_stock_state, COMPANY_PHONE
 
 
 async def find_replacement(model_name: str, db: AsyncSession) -> str:
@@ -26,8 +27,12 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
             f"정확한 모델명을 확인하시거나 현대자동화로 문의해 주세요."
         )
 
-    # 2) 현재 판매 중
+    # 2) 현재 판매 중인 제품 → 재고 상태까지 같이 확인해서 답변
+    #    (단종된 건 아니라도 일시 품절/소진임박일 수 있어, "정상 판매중"이라고만 하면
+    #     STOCK 의도로 물었을 때와 다른 답을 줄 수 있음 — get_stock_state로 통일)
     if product.status == ProductStatus.ACTIVE:
+        stock = await get_stock_state(product, db)
+
         spec_info = ""
         if product.specs:
             s = product.specs
@@ -38,6 +43,22 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
                 parts.append(f"외형: {s.dimension_w}x{s.dimension_h}x{s.dimension_d}mm")
             if parts:
                 spec_info = "\n" + " | ".join(parts)
+
+        if stock["state"] == "out_of_stock":
+            return (
+                f"'{product.model_name}'은(는) 단종된 제품은 아니지만, 현재 일시 재고 없음 상태입니다.\n"
+                f"제조사: {product.manufacturer} | 시리즈: {product.series}{spec_info}\n\n"
+                f"📞 입고 일정은 현대자동화로 문의해 주세요.\n"
+                f"☎️ {COMPANY_PHONE}"
+            )
+
+        if stock["state"] == "low_stock":
+            return (
+                f"'{product.model_name}'은(는) 현재 정상 판매 중이며, "
+                f"재고 {stock['quantity']}개 남았습니다 (소진 임박).\n"
+                f"제조사: {product.manufacturer} | 시리즈: {product.series}{spec_info}"
+            )
+
         return (
             f"'{product.model_name}'은(는) 현재 정상 판매 중입니다.\n"
             f"제조사: {product.manufacturer} | 시리즈: {product.series}"

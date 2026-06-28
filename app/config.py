@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     NAVER_CLIENT_ID: str = ""
     NAVER_CLIENT_SECRET: str = ""
 
+    # 네이버 커머스API (실시간 재고 조회용 - 검색API와는 별개의 API/인증체계)
+    NAVER_COMMERCE_CLIENT_ID: str = ""
+    NAVER_COMMERCE_CLIENT_SECRET: str = ""
+    NAVER_COMMERCE_ENABLED: bool = False  # IP 등록/인증 완료 후 true로 전환
+
     # 재고/가격 설정
     DEFAULT_STOCK_THRESHOLD: int = 3
     PRICE_DIFF_THRESHOLD: float = 10.0
