@@ -180,8 +180,13 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
         )
 
     # 6) 재고 있음
+    # description이 있으면 (버전별 안내 등 특이사항) 응답 앞에 표시
+    desc_note = ""
+    if product and product.description:
+        desc_note = f"ℹ️ {product.description}\n\n"
+
     return (
-        f"✅ '{product_name}' 재고 있음{disc_info}"
+        f"{desc_note}✅ '{product_name}' 재고 있음{disc_info}"
         f"{rep_info}{companion_note}\n\n"
         f"🛒 스마트스토어에서 바로 구매 가능합니다.\n"
         f"{STORE_URL}"
