@@ -19,52 +19,52 @@ STORE_URL = "https://smartstore.naver.com/hdauto22"
 async def _resolve_stock_quantity(product: Product | None, inv: Inventory | None) -> tuple[int, str]:
     """재고 수량의 단일 진입점.
 
-    오늘(DB 기준): NAVER_COMMERCE_ENABLED=False 라서 항상 DB 값(inv.current_stock) 반환.
-    월요일(API 연동 후): NAVER_COMMERCE_ENABLED=True + smartstore_product_id가 있으면
-    네이버 커머스API로 실시간 조회. 실패 시 예외를 잡아 DB 값으로 자동 폴백.
-
-    이 함수 밖(get_inventory_status)의 호출 코드는 전혀 바꿀 필요 없음 —
-    데이터 소스를 바꿔치기하는 지점은 여기 하나로 고정.
-
     Returns: (재고수량, "naver" 또는 "db")
     """
     db_quantity = inv.current_stock if inv else 0
 
     if not settings.NAVER_COMMERCE_ENABLED:
+        logger.info(f"[재고조회] NAVER_COMMERCE_ENABLED=False → DB 폴백 ({db_quantity})")
         return db_quantity, "db"
 
     # inventory_sync_enabled=False 이면 API 호출 없이 DB 값 사용
-    if not product or not getattr(product, "inventory_sync_enabled", True) is True:
+    if not product or not getattr(product, "inventory_sync_enabled", True):
+        logger.info(
+            f"[재고조회] {getattr(product, 'model_name', '?')} | "
+            f"inventory_sync_enabled={getattr(product, 'inventory_sync_enabled', None)} → DB 폴백"
+        )
         return db_quantity, "db"
 
     # origin_product_no 우선 사용, 없으면 smartstore_product_id 폴백
     product_no = getattr(product, "origin_product_no", None) or product.smartstore_product_id
+
+    # 디버그 로그 — return 이전에 위치해야 실제 출력됨
+    logger.info(
+        f"[재고조회] {product.model_name} | "
+        f"sync_enabled={getattr(product, 'inventory_sync_enabled', None)} | "
+        f"origin_no={getattr(product, 'origin_product_no', None)} | "
+        f"product_no={product_no} | db_stock={db_quantity}"
+    )
+
     if not product_no:
+        logger.warning(f"[재고조회] {product.model_name} | origin_product_no/smartstore_product_id 없음 → DB 폴백")
         return db_quantity, "db"
 
     try:
         qty = await get_live_stock_quantity(product_no)
+        logger.info(f"[재고조회] {product.model_name} | 네이버 실시간 재고={qty}")
         return qty, "naver"
-    
+
     except NaverCommerceError as e:
         logger.warning(
-            f"네이버 실시간 재고 조회 실패, DB 값으로 대체: "
-            f"{product.model_name} ({product.smartstore_product_id}) - {e}"
+            f"[재고조회] 네이버 실시간 재고 조회 실패, DB 값으로 대체: "
+            f"{product.model_name} ({product_no}) - {e}"
         )
         return db_quantity, "db"
 
 
 async def get_stock_state(product: Product, db: AsyncSession) -> dict:
-    """제품의 재고 상태를 단일 기준으로 판정.
-
-    실제 수량 조회는 _resolve_stock_quantity()에 위임(네이버 실시간/DB 폴백 동일 로직).
-    이 함수를 STOCK 의도(get_inventory_status)와 REPLACEMENT 의도(find_replacement)
-    양쪽에서 공통으로 써서, "재고 있어요?"든 "이거 단종됐나요?"든 질문 문구가 달라도
-    항상 같은 재고 판단(재고있음/부족/없음)이 나오게 한다.
-
-    Returns: {"quantity": int, "source": "naver"|"db",
-              "state": "in_stock"|"low_stock"|"out_of_stock", "min_threshold": int}
-    """
+    """제품의 재고 상태를 단일 기준으로 판정."""
     inv_stmt = select(Inventory).where(Inventory.product_id == product.id)
     inv_result = await db.execute(inv_stmt)
     inv = inv_result.scalars().first()
@@ -90,7 +90,7 @@ async def get_stock_state(product: Product, db: AsyncSession) -> dict:
 async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     """재고 조회 → 재고있음/부족/없음 + 단종여부 + 대체품 안내"""
 
-    # 1) 제품 정보 조회 (specs eager load — 서보 호환정보 조회에 필요)
+    # 1) 제품 정보 조회
     prod_stmt = (
         select(Product)
         .options(selectinload(Product.specs))
@@ -113,20 +113,17 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
             rep_names = ", ".join(r.new_product.model_name for r in replacements[:2])
             replacement_info = f"\n\n🔄 대체 추천 모델: {rep_names}"
 
-    # 3) 재고 상태 판정 (네이버 실시간 우선, DB 폴백 — 공통 로직, REPLACEMENT 의도와 동일)
+    # 3) 재고 상태 판정
     product_name = product.model_name if product else model_name
     if product:
         stock = await get_stock_state(product, db)
     else:
         stock = {"quantity": 0, "source": "db", "state": "out_of_stock", "min_threshold": 0}
 
-    # 3-1) 서보 계열이면 호환 가능한 짝(드라이브↔모터) 정보
+    # 3-1) 서보 호환 정보
     companion_note = await get_servo_companion_note(product, model_name, db)
 
-    # 3-2) Product 행이 없는데 모터로 식별된 경우 — "단종된 우리 제품"이 아니라
-    #      그냥 별도 재고관리 대상이 아닌 것뿐이므로, 관리자알림/단종웹검색 같은
-    #      엉뚱한 흐름을 타지 않고 여기서 바로 전용 응답으로 끝낸다.
-    #      (웹검색 fallback은 AI가 근거없는 "대체품"을 지어낼 위험이 있어 모터 케이스엔 안 씀)
+    # 3-2) Product 없는데 서보모터로 식별된 경우
     if not product and companion_note:
         return (
             f"'{model_name}'은(는) 당사 카탈로그에 별도 등록된 모델은 아니지만, "
@@ -135,12 +132,10 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
             f"☎️ {COMPANY_PHONE}"
         )
 
-    # 4) 재고 없음 (DB/매칭 실패 포함)
+    # 4) 재고 없음
     if stock["state"] == "out_of_stock":
-        # 관리자 알림 발송
         await _notify_admin(product_name)
 
-        # 웹 검색으로 대체품 찾기 (DB에 없을 경우)
         if not replacement_info:
             try:
                 web_reply, _ = await search_and_answer(
@@ -151,7 +146,6 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
             except Exception as e:
                 logger.warning(f"대체품 웹 검색 실패: {e}")
 
-        # 단종 여부 표시
         disc_info = ""
         if product and product.status == ProductStatus.DISCONTINUED:
             disc_info = f"\n⚠️ 해당 제품은 단종 제품입니다."
@@ -168,9 +162,9 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     rep_info = ""
     if product and product.status == ProductStatus.DISCONTINUED:
         disc_info = f"\n⚠️ 단종 제품입니다. 재고 소진 후 구매 불가."
-        rep_info = replacement_info  # 단종이면 대체품 항상 표시
+        rep_info = replacement_info
 
-    # 5-1) 재고 부족 (소진 임박 — 있음/없음 사이 중간 상태)
+    # 5-1) 재고 부족
     if stock["state"] == "low_stock":
         return (
             f"⏳ '{product_name}' 재고 {stock['quantity']}개 남음 (소진 임박){disc_info}"
@@ -180,7 +174,6 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
         )
 
     # 6) 재고 있음
-    # description이 있으면 (버전별 안내 등 특이사항) 응답 앞에 표시
     desc_note = ""
     if product and product.description:
         desc_note = f"ℹ️ {product.description}\n\n"
@@ -194,10 +187,9 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
 
 
 async def _notify_admin(model_name: str):
-    """재고 없음 시 관리자에게 카카오톡/슬랙 알림"""
+    """재고 없음 시 슬랙 알림"""
     message = f"[재고 없음 알림] 고객이 찾는 제품이 재고가 없습니다.\n제품명: {model_name}"
 
-    # 슬랙 알림 (설정된 경우)
     if settings.SLACK_WEBHOOK_URL:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
