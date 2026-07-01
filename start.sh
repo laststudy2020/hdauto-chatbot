@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 
 mkdir -p /tmp/tailscale
 
@@ -16,7 +15,7 @@ echo "[start.sh] tailnet에 로그인 중..."
 ./tailscale --socket=/tmp/tailscale/tailscaled.sock up \
   --authkey="${TS_AUTHKEY}" \
   --hostname=hdauto-render \
-  --accept-dns=false
+  --accept-dns=false || echo "[start.sh] tailscale login 실패 - 계속 진행"
 
 echo "[start.sh] SOCKS5 -> NAS DB 포워더 기동 중..."
 python tailscale_proxy.py &
