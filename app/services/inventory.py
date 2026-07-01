@@ -33,12 +33,19 @@ async def _resolve_stock_quantity(product: Product | None, inv: Inventory | None
     if not settings.NAVER_COMMERCE_ENABLED:
         return db_quantity, "db"
 
-    if not product or not product.smartstore_product_id:
+    # inventory_sync_enabled=False 이면 API 호출 없이 DB 값 사용
+    if not product or not getattr(product, "inventory_sync_enabled", True) is True:
+        return db_quantity, "db"
+
+    # origin_product_no 우선 사용, 없으면 smartstore_product_id 폴백
+    product_no = getattr(product, "origin_product_no", None) or product.smartstore_product_id
+    if not product_no:
         return db_quantity, "db"
 
     try:
-        qty = await get_live_stock_quantity(product.smartstore_product_id)
+        qty = await get_live_stock_quantity(product_no)
         return qty, "naver"
+    
     except NaverCommerceError as e:
         logger.warning(
             f"네이버 실시간 재고 조회 실패, DB 값으로 대체: "

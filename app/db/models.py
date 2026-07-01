@@ -35,8 +35,10 @@ class Product(Base):
     status = Column(SQLEnum(ProductStatus), default=ProductStatus.ACTIVE)
     discontinued_date = Column(String(20))
     description = Column(Text)
-    smartstore_product_id = Column(String(50))  # 스마트스토어 상품 ID
-    our_price = Column(Integer)  # 자사 판매가
+    smartstore_product_id = Column(String(50))       # 채널상품번호 (스마트스토어 URL 기준)
+    origin_product_no = Column(String(50))           # 원상품번호 (네이버 커머스API 조회용)
+    inventory_sync_enabled = Column(Boolean, default=True)  # 재고연동 대상 여부
+    our_price = Column(Integer)                      # 자사 판매가
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -79,17 +81,17 @@ class Specification(Base):
     dimension_h = Column(Float)  # 세로 mm
     dimension_d = Column(Float)  # 깊이 mm
     weight_kg = Column(Float)
-    input_voltage = Column(String(50))  # AC100-240V, DC24V 등
-    output_type = Column(String(50))  # 트랜지스터, 릴레이
-    io_points = Column(String(50))  # 입출력 점수
+    input_voltage = Column(String(50))   # AC100-240V, DC24V 등
+    output_type = Column(String(50))     # 트랜지스터, 릴레이
+    io_points = Column(String(50))       # 입출력 점수
     comm_protocol = Column(String(200))  # RS-485, Ethernet, CC-Link 등
     operating_temp = Column(String(50))  # 0~55℃
     protection_class = Column(String(20))  # IP20 등
-    mounting_type = Column(String(50))  # DIN 레일, 벽면
-    rated_power = Column(String(50))  # 정격 출력 (인버터/서보)
-    extra_specs = Column(JSON)  # 추가 스펙 (유연한 구조)
-    drawing_url = Column(String(500))  # 도면 이미지 링크
-    catalog_page = Column(String(50))  # 카탈로그 페이지 번호
+    mounting_type = Column(String(50))   # DIN 레일, 벽면
+    rated_power = Column(String(50))     # 정격 출력 (인버터/서보)
+    extra_specs = Column(JSON)           # 추가 스펙 (유연한 구조)
+    drawing_url = Column(String(500))    # 도면 이미지 링크
+    catalog_page = Column(String(50))    # 카탈로그 페이지 번호
 
     product = relationship("Product", back_populates="specs")
 
@@ -128,11 +130,11 @@ class PriceHistory(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     our_price = Column(Integer)
-    competitor_min = Column(Integer)  # 경쟁사 최저가
-    competitor_avg = Column(Integer)  # 경쟁사 평균가
-    competitor_max = Column(Integer)  # 경쟁사 최고가
-    competitor_count = Column(Integer)  # 비교 업체 수
-    diff_percent = Column(Float)  # 차이율 %
+    competitor_min = Column(Integer)   # 경쟁사 최저가
+    competitor_avg = Column(Integer)   # 경쟁사 평균가
+    competitor_max = Column(Integer)   # 경쟁사 최고가
+    competitor_count = Column(Integer) # 비교 업체 수
+    diff_percent = Column(Float)       # 차이율 %
     needs_adjustment = Column(Boolean, default=False)
     checked_at = Column(DateTime, server_default=func.now())
 
@@ -148,5 +150,5 @@ class AlarmCode(Base):
     alarm_name = Column(String(100))
     cause = Column(Text)
     solution = Column(Text)
-    manual_page = Column(String(20))  # 매뉴얼 페이지 번호
+    manual_page = Column(String(20))       # 매뉴얼 페이지 번호
     manual_filename = Column(String(200))  # 원본 PDF 파일명
