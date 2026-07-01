@@ -67,21 +67,29 @@ async def _get_access_token() -> str:
     signature = _build_signature(client_id, client_secret, timestamp)
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
             resp = await client.post(
                 TOKEN_URL,
-                json={
+                data={
                     "client_id": client_id,
                     "timestamp": timestamp,
                     "client_secret_sign": signature,
                     "grant_type": "client_credentials",
                     "type": "SELF",
                 },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
         resp.raise_for_status()
         data = resp.json()
     except httpx.HTTPError as e:
-        raise NaverCommerceError(f"토큰 발급 실패: {e}") from e
+        # 실패 시 네이버가 보낸 실제 에러 메시지를 함께 노출 (디버깅용)
+        detail = ""
+        if e.response is not None:
+            try:
+                detail = f" | 응답내용: {e.response.text}"
+            except Exception:
+                pass
+        raise NaverCommerceError(f"토큰 발급 실패: {e}{detail}") from e
 
     _token_cache["access_token"] = data["access_token"]
     _token_cache["expires_at"] = now + timedelta(seconds=int(data.get("expires_in", 3000)))
@@ -100,7 +108,7 @@ async def get_live_stock_quantity(origin_product_no: str) -> int:
 
     try:
         token = await _get_access_token()
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
             resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
 
             if resp.status_code == 401:
