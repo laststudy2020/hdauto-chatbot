@@ -90,3 +90,11 @@ async def update_stock(
         "min_threshold": inv.min_threshold,
         "alert_needed": is_low,
     }
+
+@router.get("/myip", summary="서버 아웃바운드 IP 확인 (임시)")
+async def get_server_ip():
+    """Render 서버의 실제 아웃바운드 IP 확인용 — 네이버 API IP 등록에 사용"""
+    import httpx
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get("https://ifconfig.me/ip")
+        return {"server_ip": resp.text.strip()}
