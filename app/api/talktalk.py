@@ -181,7 +181,7 @@ async def _process_message(message: str, user_id: str, db: AsyncSession) -> tupl
 
     관리자 명령어를 먼저 처리하고, 일반 메시지는 chatbot._route로 위임.
     """
-    logger.info(f"[관리자ID 확인용] user_id={user_id}")  # 확인 후 삭제
+    
     from app.api.chatbot import _route
     from app.core.admin_commands import handle_admin_command
 
