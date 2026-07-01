@@ -95,7 +95,8 @@ MODEL_PATTERNS = [
     r"MR[\-]?[A-Z]+\d+[A-Z]*[\-]?\d*[A-Z]*",       # MR-J4-70A
     r"[A-Z]\d{2}[A-Z]\d[\-\d\w]+",                  # E40H8-1024-3-T-24
     r"[A-Z]{2,6}[\-]\w{2,20}",                      # FR-E740-0.75K
-    r"L7S[A-Z]\d{3}[A-Z]?",                         # L7SA001A (LS 서보드라이브, 대시 없음)
+    r"L7S[A-Z]\d{3}[A-Z]?", 
+    r"[A-Z]\d{2,3}[A-Z]{2,6}",                      # Q03UDVCPU, Q06UDVCPU, L02SCPU (미쓰비시 Q/L PLC)                        # L7SA001A (LS 서보드라이브, 대시 없음)
 ]
 
 # ─── 사양 기반 추천(SPEC_SEARCH) 패턴 — 인버터: 전압(V) + 용량(kW) ───
