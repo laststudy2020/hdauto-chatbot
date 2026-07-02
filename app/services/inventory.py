@@ -227,6 +227,20 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
 
     # 3-4) Product 없는데 서보모터로 식별된 경우
     if not product and companion_note:
+        if stock["quantity"] > 0:
+            stock_label = (
+                "✅ 재고 있음 (소진 임박 — 서두르시는 걸 권장드립니다)"
+                if stock["state"] == "low_stock"
+                else "✅ 재고 있음"
+            )
+            return (
+                f"{stock_label}\n\n"
+                f"'{model_name}'은(는) 당사 카탈로그에 별도 등록된 모델은 아니지만, "
+                f"서보모터로 확인됩니다.{companion_note}\n\n"
+                f"🛒 스마트스토어에서 바로 구매 가능합니다.\n"
+                f"{STORE_URL}"
+            )
+
         return (
             f"'{model_name}'은(는) 당사 카탈로그에 별도 등록된 모델은 아니지만, "
             f"서보모터로 확인됩니다.{companion_note}\n\n"
