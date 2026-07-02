@@ -96,15 +96,12 @@ def _comparison_list(matches: list, capacity_w: float) -> str:
 async def get_servo_companion_note(
     product: Product | None, model_name: str, db: AsyncSession
 ) -> str:
-    """서보 계열 문의면 호환 가능한 짝(드라이브↔모터) 정보를 짧게 반환.
+    """서보 계열 문의면 호환 가능한 짝(드라이브↔모터) 정보를 반환.
 
     - product가 서보드라이브(category=='servo')면 → 호환 서보모터 한 줄
     - product가 없거나 서보드라이브가 아니면 → model_name이 모터일 가능성을 역검색해서
-      호환 서보드라이브 안내
-    - 해당사항 없으면 빈 문자열 ("" + 다른 문자열 합쳐도 안전하도록)
-
-    get_inventory_status(STOCK), find_replacement(REPLACEMENT) 양쪽에서 공통으로 써서,
-    어느 의도로 들어와도 드라이브↔모터 짝 정보가 빠지지 않게 한다.
+      호환 서보드라이브 상세 사양 안내
+    - 해당사항 없으면 빈 문자열
     """
     if product and product.category == "servo":
         if product.specs and product.specs.extra_specs:
@@ -114,12 +111,9 @@ async def get_servo_companion_note(
         return ""
 
     # product가 없거나 서보드라이브가 아님 → 모터일 가능성으로 역검색
-    drive_match = await find_drives_compatible_with_motor(model_name, db)
-    if drive_match:
-        drive_names = [line for line in drive_match.split("\n") if line.startswith("- ")]
-        if drive_names:
-            joined = ", ".join(d[2:] for d in drive_names)
-            return f"\n\n⚙️ 호환 서보드라이브: {joined}"
+    drive_detail = await find_drives_compatible_with_motor(model_name, db)
+    if drive_detail:
+        return f"\n\n{drive_detail}"
 
     return ""
 
@@ -166,9 +160,10 @@ async def find_servo_drive_details(model_name: str, db: AsyncSession) -> str | N
 
 
 async def find_drives_compatible_with_motor(motor_model: str, db: AsyncSession) -> str | None:
-    """서보모터 모델명으로 호환되는 서보드라이브를 역으로 찾는다.
+    """서보모터 모델명으로 호환되는 서보드라이브를 역으로 찾아 상세 사양까지 안내한다.
     매칭되는 드라이브가 없으면 None 반환 (모터 DB 자체가 없어 호출부에서 일반 조회로 넘어가게 함).
-    모터 외형치수는 카탈로그 도면 미확보로 아직 제공 불가 — 안내 문구로 대체."""
+    모터 자체의 외형치수는 신뢰 가능한 출처가 없어 제공하지 않음 — 잘못된 치수 안내가
+    감속기 커플링 등 실제 기계적 불일치 사고로 이어질 수 있기 때문."""
     stmt = (
         select(Product, Specification)
         .join(Specification, Specification.product_id == Product.id)
@@ -178,21 +173,40 @@ async def find_drives_compatible_with_motor(motor_model: str, db: AsyncSession) 
     rows = result.all()
 
     motor_key = motor_model.strip().lower()
-    matched_drives = []
+    matched = []
     for p, s in rows:
         if not s.extra_specs:
             continue
         motors = s.extra_specs.get("compatible_motors", [])
         if any(motor_key in m.lower() or m.lower() in motor_key for m in motors):
-            matched_drives.append((p, s))
+            matched.append((p, s))
 
-    if not matched_drives:
+    if not matched:
         return None
 
-    drive_list = "\n".join(f"- {p.manufacturer} {p.model_name}" for p, s in matched_drives)
+    matched.sort(key=lambda ps: (ps[0].manufacturer, ps[0].model_name))
 
-    return (
-        f"**{motor_model}** 서보모터와 호환 가능한 서보드라이브:\n{drive_list}\n\n"
-        f"⚠️ 모터 외형치수(가로/세로/높이)는 아직 카탈로그 도면을 확보하지 못해 안내드리기 어렵습니다. "
-        f"치수가 필요하시면 현대자동화로 문의해 주세요."
+    detail_blocks = []
+    for p, s in matched:
+        capacity_w = s.extra_specs.get("capacity_w") if s.extra_specs else None
+        capacity_label = f"{capacity_w:g}W" if capacity_w else "-"
+        detail_blocks.append(_single_block(p, s, capacity_w) if capacity_w else (
+            f"**{p.manufacturer} {p.model_name}**\n"
+            f"인터페이스: {s.extra_specs.get('interface_note', '-') if s.extra_specs else '-'}\n"
+            f"정격 출력전류: {s.extra_specs.get('rated_output_current_a', '-') if s.extra_specs else '-'}A"
+        ))
+
+    header = (
+        f"**{motor_model}** 서보모터와 호환 가능한 서보드라이브 {len(matched)}종:"
     )
+    body = "\n\n".join(detail_blocks)
+
+    motor_size_note = (
+        "\n\n⚠️ 모터 자체의 외형치수(프레임 사이즈/축 지름 등)는 확인된 카탈로그 도면이 "
+        "없어 안내드리기 어렵습니다. 감속기 연결 등 치수가 중요한 작업이시라면, 반드시 "
+        "제품 명판이나 제조사 정식 카탈로그로 직접 확인 부탁드립니다. 잘못된 치수 안내로 "
+        "커플링 등이 안 맞는 경우가 생길 수 있어 확실하지 않은 수치는 알려드리지 않습니다.\n"
+        "☎️ 정확한 치수가 필요하시면 현대자동화(010-3861-2030)로 문의 주세요."
+    )
+
+    return f"{header}\n\n{body}{motor_size_note}"
