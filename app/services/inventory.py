@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Inventory, Product, Replacement, ProductStatus
 from app.config import get_settings
 from app.services.web_search import search_and_answer
-from app.services.naver_commerce import get_live_stock_quantity, NaverCommerceError
+from app.services.naver_commerce import search_stock_by_model_name, NaverCommerceError
 from app.services.servo_spec_search import get_servo_companion_note
 import httpx
 import logging
@@ -25,27 +25,29 @@ REPLACEMENT_CAUTION = (
     "5. 기계 치수 및 마운팅 방식 호환 여부 확인"
 )
 
+CATEGORY_MAP = {
+    "servo": "서보드라이브",
+    "서보드라이브": "서보드라이브",
+    "inverter": "인버터",
+    "인버터": "인버터",
+    "servo_motor": "서보모터",
+    "서보모터": "서보모터",
+    "plc": "PLC",
+    "PLC": "PLC",
+    "hmi": "HMI(터치스크린)",
+    "HMI": "HMI(터치스크린)",
+}
+
 
 def _build_product_info(product: Product) -> str:
     """카테고리 + 간략 동작사양 조합."""
     lines = []
 
-    # 카테고리
-    category_map = {
-        "servo": "서보드라이브",
-        "서보드라이브": "서보드라이브",
-        "inverter": "인버터",
-        "인버터": "인버터",
-        "servo_motor": "서보모터",
-        "서보모터": "서보모터",
-        "plc": "PLC",
-        "PLC": "PLC",
-        "hmi": "HMI(터치스크린)",
-        "HMI": "HMI(터치스크린)",
-    }
-    category = category_map.get(product.category, product.category)
+    # 카테고리 (None/미분류 안전 처리)
+    raw_category = getattr(product, "category", None)
+    category = CATEGORY_MAP.get(raw_category, raw_category) if raw_category else "미분류"
     manufacturer = product.manufacturer or ""
-    lines.append(f"📋 제품 분류: {manufacturer} {category}")
+    lines.append(f"📋 제품 분류: {manufacturer} {category}".strip())
 
     # 스펙 정보 (있는 항목만 출력)
     specs = product.specs
@@ -68,6 +70,11 @@ def _build_product_info(product: Product) -> str:
 async def _resolve_stock_quantity(product: Product | None, inv: Inventory | None) -> tuple[int, str]:
     """재고 수량의 단일 진입점.
 
+    2026-07-02 변경: origin_product_no 사전 매핑 / inventory_sync_enabled 게이트를
+    제거하고, 모델명 기반 실시간 검색(search_stock_by_model_name)을 우선 사용.
+    사전 매핑이 잘못되어(finalize_matching.py의 오매칭 제외 로직 등) 실제로는
+    재고가 있는데도 "재고 없음"으로 응답하는 문제를 막기 위함.
+
     Returns: (재고수량, "naver" 또는 "db")
     """
     db_quantity = inv.current_stock if inv else 0
@@ -76,41 +83,30 @@ async def _resolve_stock_quantity(product: Product | None, inv: Inventory | None
         logger.info(f"[재고조회] NAVER_COMMERCE_ENABLED=False → DB 폴백 ({db_quantity})")
         return db_quantity, "db"
 
-    if not product or not getattr(product, "inventory_sync_enabled", True):
-        logger.info(
-            f"[재고조회] {getattr(product, 'model_name', '?')} | "
-            f"inventory_sync_enabled={getattr(product, 'inventory_sync_enabled', None)} → DB 폴백"
-        )
-        return db_quantity, "db"
-
-    product_no = getattr(product, "origin_product_no", None) or product.smartstore_product_id
-
-    logger.info(
-        f"[재고조회] {product.model_name} | "
-        f"sync_enabled={getattr(product, 'inventory_sync_enabled', None)} | "
-        f"origin_no={getattr(product, 'origin_product_no', None)} | "
-        f"product_no={product_no} | db_stock={db_quantity}"
-    )
-
-    if not product_no:
-        logger.warning(f"[재고조회] {product.model_name} | origin_product_no 없음 → DB 폴백")
+    model_name = getattr(product, "model_name", None)
+    if not model_name:
+        logger.info("[재고조회] model_name 없음 → DB 폴백")
         return db_quantity, "db"
 
     try:
-        qty = await get_live_stock_quantity(product_no)
-        logger.info(f"[재고조회] {product.model_name} | 네이버 실시간 재고={qty}")
-        return qty, "naver"
-
+        result = await search_stock_by_model_name(model_name)
     except NaverCommerceError as e:
-        logger.warning(
-            f"[재고조회] 네이버 실시간 재고 조회 실패, DB 값으로 대체: "
-            f"{product.model_name} ({product_no}) - {e}"
-        )
+        logger.warning(f"[재고조회] 네이버 모델명 검색 실패, DB 값으로 대체: {model_name} - {e}")
         return db_quantity, "db"
+
+    if result is None:
+        logger.info(f"[재고조회] {model_name} | 모델명 검색 결과 없음 → DB 폴백 ({db_quantity})")
+        return db_quantity, "db"
+
+    logger.info(
+        f"[재고조회] {model_name} | 모델명 검색 매칭='{result['matched_name']}' "
+        f"({result['match_count']}건) | 재고={result['quantity']}"
+    )
+    return result["quantity"], "naver"
 
 
 async def get_stock_state(product: Product, db: AsyncSession) -> dict:
-    """제품의 재고 상태를 단일 기준으로 판정."""
+    """제품(Product row 존재)의 재고 상태를 단일 기준으로 판정."""
     inv_stmt = select(Inventory).where(Inventory.product_id == product.id)
     inv_result = await db.execute(inv_stmt)
     inv = inv_result.scalars().first()
@@ -133,8 +129,43 @@ async def get_stock_state(product: Product, db: AsyncSession) -> dict:
     }
 
 
+async def _check_naver_directly(model_name: str) -> dict | None:
+    """
+    Product 테이블에 등록되지 않은 모델명에 대해서도, 네이버 실시간 검색으로
+    바로 재고를 확인한다 (DB 카탈로그 등록 여부와 무관하게 스마트스토어에
+    실제로 있으면 잡아내기 위함).
+
+    Returns:
+        {"quantity": int, "matched_name": str} 또는 None (검색 비활성/실패/미매칭)
+    """
+    if not settings.NAVER_COMMERCE_ENABLED:
+        return None
+
+    try:
+        result = await search_stock_by_model_name(model_name)
+    except NaverCommerceError as e:
+        logger.warning(f"[재고조회] DB미등록 모델 네이버 직접검색 실패: {model_name} - {e}")
+        return None
+
+    if result is None:
+        return None
+
+    logger.info(
+        f"[재고조회] DB미등록 모델 '{model_name}' | 네이버 직접검색 매칭='{result['matched_name']}' "
+        f"| 재고={result['quantity']}"
+    )
+    return {"quantity": result["quantity"], "matched_name": result["matched_name"]}
+
+
 async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     """재고 조회 → 재고여부 + 카테고리/사양 + 단종시 대체품(주의사항 포함)"""
+
+    model_name = (model_name or "").strip()
+    if not model_name:
+        return (
+            f"모델명을 인식하지 못했습니다. 정확한 모델명을 입력해 주세요.\n"
+            f"📞 문의: {COMPANY_PHONE}"
+        )
 
     # 1) 제품 정보 조회 (specs eager load)
     prod_stmt = (
@@ -159,16 +190,35 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
 
     # 3) 재고 상태 판정
     product_name = product.model_name if product else model_name
+
     if product:
         stock = await get_stock_state(product, db)
     else:
-        stock = {"quantity": 0, "source": "db", "state": "out_of_stock", "min_threshold": 0}
+        # DB 카탈로그에 없는 모델 → 바로 out_of_stock 단정하지 않고
+        # 네이버 실시간 검색으로 한 번 더 확인 (스마트스토어에 실제로
+        # 있는 상품인데 DB에만 안 등록된 경우를 놓치지 않기 위함)
+        direct = await _check_naver_directly(model_name)
+        if direct and direct["quantity"] > 0:
+            stock = {
+                "quantity": direct["quantity"],
+                "source": "naver",
+                "state": "in_stock",
+                "min_threshold": settings.DEFAULT_STOCK_THRESHOLD,
+            }
+            product_name = direct["matched_name"]
+        else:
+            stock = {"quantity": 0, "source": "db", "state": "out_of_stock", "min_threshold": 0}
 
-    # 3-1) 카테고리 + 사양 정보
+    # 3-1) 카테고리 + 사양 정보 (Product row가 있을 때만 표시 가능)
     product_info = _build_product_info(product) if product else ""
 
-    # 3-2) 서보 호환 정보
-    companion_note = await get_servo_companion_note(product, model_name, db)
+    # 3-2) 서보 호환 정보 (조회 실패해도 전체 흐름은 안 끊기게 방어)
+    try:
+        companion_note = await get_servo_companion_note(product, model_name, db)
+    except Exception as e:
+        logger.warning(f"서보 호환 정보 조회 실패: {model_name} - {e}")
+        companion_note = ""
+    companion_note = companion_note or ""
 
     # 3-3) description 특이사항 (버전별 안내 등)
     desc_note = ""
@@ -185,7 +235,7 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
         )
 
     # ── 단종 여부 ──
-    is_discontinued = product and product.status == ProductStatus.DISCONTINUED
+    is_discontinued = bool(product and product.status == ProductStatus.DISCONTINUED)
     disc_label = "\n⚠️ 단종 제품 — 재고 소진 후 구매 불가합니다." if is_discontinued else ""
 
     # ── 대체품 안내 블록 (단종이거나 재고 없을 때) ──
@@ -257,7 +307,7 @@ async def _notify_admin(model_name: str):
 
     if settings.SLACK_WEBHOOK_URL:
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
                 await client.post(
                     settings.SLACK_WEBHOOK_URL,
                     json={"text": message}

@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
 
@@ -31,21 +31,24 @@ class Settings(BaseSettings):
     # 현대자동화 위치 정보
     COMPANY_NAME: str = "HD AUTO 부품 도우미"
     COMPANY_ADDRESS: str = "부산광역시"
-    COMPANY_PHONE: str = "051-000-0000"
+    COMPANY_PHONE: str = "010-3861-2030"
     COMPANY_LAT: float = 35.1796
     COMPANY_LNG: float = 129.0756
-    COMPANY_HOURS: str = "평일 09:00~18:00"
+    COMPANY_HOURS: str = "평일 09:00~17:00"
 
     # 네이버 톡톡
     TALKTALK_AUTHORIZATION: str = ""
     TALKTALK_SECRET: str = ""
+    ADMIN_TALKTALK_USER_ID: str = ""  # 관리자 네이버 톡톡 user_id
     SLACK_WEBHOOK_URL: str = ""
 
     # 관리자 채팅 명령어 (대체품 등록 등)
     ADMIN_COMMAND_KEY: str = ""
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        extra="ignore",  # .env에 있지만 필드로 선언 안 된 값은 무시 (완전 차단보다 안전)
+    )
 
 
 @lru_cache()
