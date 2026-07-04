@@ -50,6 +50,15 @@ class Settings(BaseSettings):
         extra="ignore",  # .env에 있지만 필드로 선언 안 된 값은 무시 (완전 차단보다 안전)
     )
 
+    # 카카오 나에게 보내기
+    KAKAO_REST_API_KEY: str = ""
+    KAKAO_CLIENT_SECRET: str = ""
+    KAKAO_REDIRECT_URI: str = "http://localhost:5000/oauth"
+
+    # 네이버쇼핑 가격비교 (미설정 시 기존 NAVER_CLIENT_ID로 폴백)
+    NAVER_SHOPPING_CLIENT_ID: str = ""
+    NAVER_SHOPPING_CLIENT_SECRET: str = ""
+
 
 @lru_cache()
 def get_settings() -> Settings:

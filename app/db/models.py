@@ -152,3 +152,12 @@ class AlarmCode(Base):
     solution = Column(Text)
     manual_page = Column(String(20))       # 매뉴얼 페이지 번호
     manual_filename = Column(String(200))  # 원본 PDF 파일명
+
+class KakaoToken(Base):
+    __tablename__ = "kakao_tokens"
+
+    id = Column(Integer, primary_key=True, default=1)
+    access_token = Column(String(255), nullable=False)
+    refresh_token = Column(String(255), nullable=False)
+    expires_in = Column(Integer, nullable=False)
+    obtained_at = Column(DateTime, nullable=False)    
