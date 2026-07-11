@@ -29,3 +29,6 @@ __pycache__/
 
 # git worktrees
 .worktrees/
+
+# subagent-driven-development scratch state
+.superpowers/
