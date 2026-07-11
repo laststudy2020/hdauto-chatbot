@@ -4,7 +4,7 @@
 from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.models import Product, Specification, Replacement, ProductStatus
+from app.db.models import Product, Specification, Replacement, ProductStatus, Reducer
 
 _KNOWN_CAPACITIES_W = [50, 100, 200, 400, 500, 600, 750, 1000, 1500, 2000, 3000, 3500, 5000, 6000, 7000, 7500, 11000, 15000]
 
@@ -17,6 +17,12 @@ _DIMENSION_DISCLAIMER = (
 
 def _with_dimension_disclaimer(text: str) -> str:
     return text + _DIMENSION_DISCLAIMER
+
+
+# ─── 감속기 자동매칭 결과에 항상 첨부하는 어댑터 확인 문구 (치수 disclaimer와 별개) ───
+_REDUCER_ADAPTER_DISCLAIMER = (
+    "\n\n🔩 정확한 모터 장착 어댑터(C1~C10)는 APEX 측 확인이 필요합니다."
+)
 
 
 async def find_servo_by_capacity(capacity_w: float, db: AsyncSession) -> str:
@@ -236,6 +242,45 @@ async def _all_servo_rows(db: AsyncSession) -> list[tuple[Product, Specification
     )
     result = await db.execute(stmt)
     return result.all()
+
+
+async def _all_reducer_rows(db: AsyncSession) -> list[Reducer]:
+    result = await db.execute(select(Reducer))
+    return list(result.scalars().all())
+
+
+def _match_reducers_by_bore(shaft_mm: float, reducer_rows: list[Reducer]) -> list[tuple[Reducer, str]]:
+    """축경(mm) 기준으로 호환 가능한 감속기를 찾는다.
+
+    단순히 '축경 <= 입력홀'인 행을 전부 반환하지 않는다 — 그러면 14mm 모터에도
+    입력홀 <=48mm인 AB220(2000Nm급 대형 감속기)까지 걸려 숫자로는 맞지만 실제로는
+    터무니없는 추천이 된다. 대신 이 축경을 수용하는 행들 중 '가장 작은 입력홀 등급'에
+    해당하는 행만 반환한다 (동급 여러 시리즈/단수가 동점일 수 있음).
+    """
+    fits: list[tuple[Reducer, float, str]] = []
+    for r in reducer_rows:
+        if r.input_bore_std_mm is not None and shaft_mm <= r.input_bore_std_mm:
+            fits.append((r, r.input_bore_std_mm, "표준"))
+        elif r.input_bore_optional_mm is not None and shaft_mm <= r.input_bore_optional_mm:
+            fits.append((r, r.input_bore_optional_mm, "옵션 주문 필요"))
+
+    if not fits:
+        return []
+
+    min_bore = min(bore for _, bore, _ in fits)
+    matches = [(r, grade) for r, bore, grade in fits if bore == min_bore]
+    matches.sort(key=lambda m: (m[0].series, m[0].model_name, m[0].stage))
+    return matches
+
+
+def _format_reducer_matches(shaft_mm: float, matches: list[tuple[Reducer, str]]) -> str:
+    lines = [f"축경 {shaft_mm:g}mm 기준 호환 가능 감속기 {len(matches)}건:"]
+    for r, grade in matches:
+        bore_note = f"≤{r.input_bore_std_mm:g}mm"
+        if r.input_bore_optional_mm is not None:
+            bore_note += f"(옵션 ≤{r.input_bore_optional_mm:g}mm)"
+        lines.append(f"- {r.model_name} ({r.stage}단, 입력홀 {bore_note}) — {grade}")
+    return "\n".join(lines)
 
 
 def _format_motor_spec_block(motor_key: str, motor_data: dict) -> str:
