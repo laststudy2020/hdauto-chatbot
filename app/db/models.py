@@ -153,6 +153,36 @@ class AlarmCode(Base):
     manual_page = Column(String(20))       # 매뉴얼 페이지 번호
     manual_filename = Column(String(200))  # 원본 PDF 파일명
 
+
+# ─── 8. APEX AB/ABR 감속기 카탈로그 (참고 데이터 — Product/Inventory와 무관) ───
+class Reducer(Base):
+    __tablename__ = "reducers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    series = Column(String(10), nullable=False, index=True)        # "AB" | "ABR"
+    model_name = Column(String(20), nullable=False, index=True)    # "AB042", "AB060A", ...
+    stage = Column(Integer, nullable=False)                        # 1 | 2
+    ratio_list = Column(JSON)               # 선택 가능 감속비 리스트, 예: [3,4,5,6,7,8,9,10]
+    ratio_range_label = Column(String(20))  # 표시용, 예: "3~10"
+
+    input_bore_std_mm = Column(Float)       # 표준 입력홀 최대 허용 축경(mm)
+    input_bore_optional_mm = Column(Float)  # 옵션 주문시 최대 허용 축경(mm), 없으면 NULL
+
+    rated_torque_min_nm = Column(Float)     # 감속비 구간 내 정격출력토크 범위
+    rated_torque_max_nm = Column(Float)
+
+    rated_input_speed_rpm = Column(Integer)
+    max_input_speed_rpm = Column(Integer)
+
+    weight_kg = Column(Float)
+
+    backlash_p0_arcmin = Column(Float)   # nullable — 미생산/특수주문이면 None
+    backlash_p1_arcmin = Column(Float)
+    backlash_p2_arcmin = Column(Float)
+    backlash_note = Column(String(200))  # "P0급 제작안됨" 등 각주 보존
+
+    source_note = Column(String(200))    # 출처, 예: "apex감속기 06AB+Series.pdf p.71(spec)/p.72(dim)"
+
 class KakaoToken(Base):
     __tablename__ = "kakao_tokens"
 
