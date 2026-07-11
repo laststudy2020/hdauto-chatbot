@@ -10,7 +10,10 @@ from app.services.location import get_location_response
 from app.services.inventory import get_inventory_status
 from app.services.alarm import diagnose_alarm
 from app.services.spec_search import find_by_spec
-from app.services.servo_spec_search import find_servo_by_capacity, find_servo_drive_details, find_drives_compatible_with_motor
+from app.services.servo_spec_search import (
+    find_servo_by_capacity, find_servo_drive_details, find_drives_compatible_with_motor,
+    find_reducer_compat, find_motors_by_reducer,
+)
 from app.services.web_search import search_and_answer
 from app.core.clova import clova_client, SYSTEM_PROMPTS
 import logging
@@ -115,12 +118,23 @@ async def _route(intent_result, message: str, db: AsyncSession) -> tuple[str, st
             # 1) 서보드라이브 모델이면 단종/대체품+호환모터+타사비교를 통합 안내
             servo_detail = await find_servo_drive_details(model, db)
             if servo_detail is not None:
+                reducer_note = await find_reducer_compat(model, db)
+                if reducer_note:
+                    servo_detail += "\n\n" + reducer_note
                 return servo_detail, "db_servo_detail"
 
             # 2) 서보모터 모델이면 호환 가능한 드라이브를 역검색
             motor_detail = await find_drives_compatible_with_motor(model, db)
             if motor_detail is not None:
+                reducer_note = await find_reducer_compat(model, db)
+                if reducer_note:
+                    motor_detail += "\n\n" + reducer_note
                 return motor_detail, "db_servo_motor_reverse"
+
+            # 2.5) 감속기 모델명이면 호환되는 서보모터를 역검색
+            reducer_reverse = await find_motors_by_reducer(model, db)
+            if reducer_reverse is not None:
+                return reducer_reverse, "db_reducer_motor_reverse"
 
             # 3) 그 외 일반 제품 스펙 조회
             db_reply = await lookup_specs(model, db)

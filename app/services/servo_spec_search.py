@@ -1,11 +1,22 @@
 """서보드라이브 용량(W) 기반 추천 검색 + 모델별 상세조회 + 모터 역검색
-(v8 — 드라이브 상세검색 시 단종/대체품/호환모터/타사비교 통합, 모터 검색시 호환드라이브 역검색 추가)"""
+(v9 — 드라이브 상세검색 시 단종/대체품/호환모터/타사비교 통합, 모터 검색시 호환드라이브 역검색 추가,
+감속기 결합사양(motor_specs) 양방향 검색 추가)"""
 from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Product, Specification, Replacement, ProductStatus
 
 _KNOWN_CAPACITIES_W = [50, 100, 200, 400, 500, 600, 750, 1000, 1500, 2000, 3000, 3500, 5000, 6000, 7000, 7500, 11000, 15000]
+
+# ─── 모터 물리치수/감속기 결합사양 안내 시 항상 첨부하는 면책 문구 (단일 관리 지점) ───
+_DIMENSION_DISCLAIMER = (
+    "\n\n⚠️ 위 치수 및 결합 사양은 참고용이며, 실제 장착 전 반드시 제조사 도면 또는 "
+    "현대자동화로 직접 확인 부탁드립니다. 치수 오류로 인한 기계적 손상은 책임지지 않습니다."
+)
+
+
+def _with_dimension_disclaimer(text: str) -> str:
+    return text + _DIMENSION_DISCLAIMER
 
 
 async def find_servo_by_capacity(capacity_w: float, db: AsyncSession) -> str:
@@ -201,6 +212,11 @@ async def find_drives_compatible_with_motor(motor_model: str, db: AsyncSession) 
     )
     body = "\n\n".join(detail_blocks)
 
+    # motor_specs로 실제 치수가 등록된 모터면, 이 뒤에 find_reducer_compat()가
+    # 실제 치수를 붙여주므로 "치수 확인 불가" 안내를 붙이면 한 응답 안에서 모순됨 — 생략.
+    if _motor_has_registered_specs(motor_model, rows):
+        return f"{header}\n\n{body}"
+
     motor_size_note = (
         "\n\n⚠️ 모터 자체의 외형치수(프레임 사이즈/축 지름 등)는 확인된 카탈로그 도면이 "
         "없어 안내드리기 어렵습니다. 감속기 연결 등 치수가 중요한 작업이시라면, 반드시 "
@@ -210,3 +226,146 @@ async def find_drives_compatible_with_motor(motor_model: str, db: AsyncSession) 
     )
 
     return f"{header}\n\n{body}{motor_size_note}"
+
+
+async def _all_servo_rows(db: AsyncSession) -> list[tuple[Product, Specification]]:
+    stmt = (
+        select(Product, Specification)
+        .join(Specification, Specification.product_id == Product.id)
+        .where(Product.category == "servo")
+    )
+    result = await db.execute(stmt)
+    return result.all()
+
+
+def _format_motor_spec_block(motor_key: str, motor_data: dict) -> str:
+    """motor_specs[모터명] 항목 하나(전기사양+치수+감속기)를 출력 블록으로 포맷."""
+    lines = [f"**{motor_key}**"]
+
+    spec_items = []
+    if motor_data.get("power_w") is not None:
+        spec_items.append(f"정격출력 {motor_data['power_w']}W")
+    if motor_data.get("rated_torque_nm") is not None:
+        spec_items.append(f"정격토크 {motor_data['rated_torque_nm']}N·m")
+    if motor_data.get("max_torque_nm") is not None:
+        spec_items.append(f"최대토크 {motor_data['max_torque_nm']}N·m")
+    if motor_data.get("rated_speed_rpm") is not None and motor_data.get("max_speed_rpm") is not None:
+        spec_items.append(f"속도 {motor_data['rated_speed_rpm']}/{motor_data['max_speed_rpm']}rpm(정격/최대)")
+    if motor_data.get("inertia_j") is not None:
+        brake = f"({motor_data['inertia_j_brake']})" if motor_data.get("inertia_j_brake") is not None else ""
+        spec_items.append(f"관성모멘트 {motor_data['inertia_j']}{brake}×10⁻⁴kg·m²")
+    if motor_data.get("mass_kg") is not None:
+        brake = f"({motor_data['mass_kg_brake']})" if motor_data.get("mass_kg_brake") is not None else ""
+        spec_items.append(f"질량 {motor_data['mass_kg']}{brake}kg")
+    if spec_items:
+        lines.append(f"전기사양: {' | '.join(spec_items)}")
+
+    dims = motor_data.get("dimensions") or {}
+    dim_items = []
+    if dims.get("frame_size_mm") is not None:
+        dim_items.append(f"플랜지 프레임 □{dims['frame_size_mm']}mm")
+    if dims.get("body_size_mm") is not None:
+        dim_items.append(f"몸체 단면 □{dims['body_size_mm']}mm")
+    length = dims.get("overall_length_mm")
+    if length is not None:
+        brake = f"({dims['overall_length_mm_brake']})" if dims.get("overall_length_mm_brake") is not None else ""
+        dim_items.append(f"전장 {length}{brake}mm")
+    if dims.get("shaft_diameter_mm") is not None:
+        dim_items.append(f"축경 {dims['shaft_diameter_mm']}mm")
+    if dims.get("shaft_length_mm") is not None:
+        dim_items.append(f"축길이 {dims['shaft_length_mm']}mm")
+    if dims.get("flange_spec"):
+        dim_items.append(f"플랜지 볼트 {dims['flange_spec']}")
+    if dim_items:
+        lines.append(f"치수: {' | '.join(dim_items)}")
+
+    reducers = motor_data.get("reducers") or []
+    if reducers:
+        reducer_lines = []
+        for r in reducers:
+            parts = [r.get("model", "-")]
+            if r.get("reduction_ratio"):
+                parts.append(f"감속비 {r['reduction_ratio']}")
+            if r.get("coupling_note"):
+                parts.append(r["coupling_note"])
+            reducer_lines.append(" · ".join(parts))
+        lines.append("결합 가능 감속기:\n" + "\n".join(f"  - {rl}" for rl in reducer_lines))
+    else:
+        lines.append("결합 가능 감속기: 감속기 호환 정보 미등록")
+
+    return "\n".join(lines)
+
+
+def _motor_has_registered_specs(motor_model: str, rows: list) -> bool:
+    """motor_model이 어느 드라이브에든 motor_specs로 등록돼 있는지 확인.
+    (find_drives_compatible_with_motor가 정적 '치수 없음' 안내를 붙일지 판단하는 데 사용)"""
+    key = motor_model.strip().lower()
+    for _, s in rows:
+        motor_specs = (s.extra_specs or {}).get("motor_specs") or {}
+        for motor_key in motor_specs:
+            if key in motor_key.lower() or motor_key.lower() in key:
+                return True
+    return False
+
+
+async def find_reducer_compat(model_name: str, db: AsyncSession) -> str | None:
+    """드라이브 모델명 또는 모터 모델명으로 등록된 감속기 결합사양(motor_specs)을 조회.
+
+    - model_name이 드라이브 자체와 매칭되면 그 드라이브의 motor_specs 전체를 반환.
+    - 아니면 model_name을 모터명으로 간주해 모든 드라이브의 motor_specs 키를 매칭.
+    - motor_specs 데이터가 없으면(=아직 검증된 치수/감속기 정보가 없는 모터) None 반환
+      → 호출부가 기존 폴백(일반 스펙 조회 등)으로 넘어가게 함.
+    """
+    rows = await _all_servo_rows(db)
+    key = model_name.strip().lower()
+
+    # 1) 드라이브 자체 모델명/시리즈로 매칭
+    for p, s in rows:
+        if key in p.model_name.lower() or (p.series and key in p.series.lower()):
+            motor_specs = (s.extra_specs or {}).get("motor_specs") or {}
+            if motor_specs:
+                blocks = [_format_motor_spec_block(m, d) for m, d in motor_specs.items()]
+                header = f"**{p.manufacturer} {p.model_name}** 호환 모터 결합사양:"
+                return _with_dimension_disclaimer(f"{header}\n\n" + "\n\n".join(blocks))
+
+    # 2) 모터명으로 매칭 (여러 드라이브에 걸쳐 등록돼 있을 수 있음 — 모두 수집)
+    matched_blocks = []
+    for p, s in rows:
+        motor_specs = (s.extra_specs or {}).get("motor_specs") or {}
+        for motor_key, motor_data in motor_specs.items():
+            if key in motor_key.lower() or motor_key.lower() in key:
+                block = _format_motor_spec_block(motor_key, motor_data)
+                matched_blocks.append(f"(호환 드라이브: {p.manufacturer} {p.model_name})\n{block}")
+
+    if not matched_blocks:
+        return None
+
+    header = f"**{model_name}** 결합사양:"
+    return _with_dimension_disclaimer(f"{header}\n\n" + "\n\n".join(matched_blocks))
+
+
+async def find_motors_by_reducer(reducer_model: str, db: AsyncSession) -> str | None:
+    """감속기 모델명으로 호환되는 서보모터(+소속 드라이브)를 역검색.
+    매칭되는 감속기 등록이 없으면 None 반환."""
+    rows = await _all_servo_rows(db)
+    key = reducer_model.strip().lower()
+
+    matches = []  # (drive_product, motor_key, reducer_dict)
+    for p, s in rows:
+        motor_specs = (s.extra_specs or {}).get("motor_specs") or {}
+        for motor_key, motor_data in motor_specs.items():
+            for r in motor_data.get("reducers") or []:
+                r_model = (r.get("model") or "").lower()
+                if r_model and (key in r_model or r_model in key):
+                    matches.append((p, motor_key, r))
+
+    if not matches:
+        return None
+
+    lines = [f"**{reducer_model}** 감속기와 호환되는 서보모터 {len(matches)}건:"]
+    for p, motor_key, r in matches:
+        ratio = f", 감속비 {r['reduction_ratio']}" if r.get("reduction_ratio") else ""
+        note = f" — {r['coupling_note']}" if r.get("coupling_note") else ""
+        lines.append(f"- {motor_key} (드라이브: {p.manufacturer} {p.model_name}){ratio}{note}")
+
+    return _with_dimension_disclaimer("\n".join(lines))
