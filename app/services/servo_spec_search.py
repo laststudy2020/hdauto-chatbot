@@ -10,10 +10,13 @@ from app.db.models import Product, Specification, Replacement, ProductStatus, Re
 
 _KNOWN_CAPACITIES_W = [50, 100, 200, 400, 500, 600, 750, 1000, 1500, 2000, 3000, 3500, 5000, 6000, 7000, 7500, 11000, 15000]
 
-# ─── 모터 물리치수/감속기 결합사양 안내 시 항상 첨부하는 면책 문구 (단일 관리 지점) ───
+# ─── 모터 물리치수/감속기 결합사양 안내 시 항상 첨부하는 면책 문구 (단일 관리 지점).
+# 치수가 등록된 경우/미등록인 경우 모두 이 문구 하나로 통일해서 끝에 붙인다 —
+# 두 경로가 서로 다른 문구를 쓰면 같은 챗봇인데 안내가 다르다는 혼동을 준다. ───
 _DIMENSION_DISCLAIMER = (
-    "\n\n⚠️ 위 치수 및 결합 사양은 참고용이며, 실제 장착 전 반드시 제조사 도면 또는 "
-    "현대자동화로 직접 확인 부탁드립니다. 치수 오류로 인한 기계적 손상은 책임지지 않습니다."
+    "\n\n⚠️ 위 치수 및 결합 사양은 참고용이며, 최종 확인은 반드시 제조사 정식 매뉴얼/도면을 "
+    "참고하시고 실제 장착 전 확인 부탁드립니다. 치수 오류로 인한 기계적 손상은 책임지지 않습니다.\n"
+    "☎️ 정확한 확인이 필요하시면 현대자동화(010-3861-2030)로 문의 주세요."
 )
 
 
@@ -94,13 +97,19 @@ def _single_block(p: Product, s: Specification, capacity_w: float) -> str:
     weight = f", 무게 {s.weight_kg}kg" if s.weight_kg else ""
     interface = s.extra_specs.get("interface_note", "-")
     brake_note = s.extra_specs.get("brake_note", "")
+    current_a = s.extra_specs.get("rated_output_current_a")
 
-    block = (
-        f"**{p.manufacturer} {p.model_name}** ({capacity_w:g}W{weight})\n"
-        f"인터페이스: {interface}\n"
-        f"정격 출력전류: {s.extra_specs.get('rated_output_current_a', '-')}A\n"
-        f"호환 서보모터: {_motor_text(s)}"
-    )
+    lines = [
+        f"**{p.manufacturer} {p.model_name}** ({capacity_w:g}W{weight})",
+        f"인터페이스: {interface}",
+    ]
+    # rated_output_current_a는 일부 등록 스크립트(MR-J2S/LS)가 매뉴얼에서 애초에
+    # 추출하지 않은 값이라 항상 비어있다 — "-A" 자리채움 대신 줄 자체를 생략.
+    if current_a is not None:
+        lines.append(f"정격 출력전류: {current_a}A")
+    lines.append(f"호환 서보모터: {_motor_text(s)}")
+
+    block = "\n".join(lines)
     if brake_note:
         block += f"\n※ {brake_note}"
     return block
@@ -127,7 +136,12 @@ def _comparison_list(matches: list, capacity_w: float) -> str:
     parts = [
         f"🔧 **{capacity_w:g}W 서보드라이브 비교** ({len(matches)}개 모델)",
         section("무게", weight_vals),
-        section("정격 출력전류", current_vals),
+    ]
+    # 비교 대상 중 하나라도 정격 출력전류가 등록돼 있으면 표시(미등록 모델은 "-"로
+    # 대비 표시하는 게 유용) — 전부 미등록이면 "-"만 나열된 무의미한 섹션이므로 생략.
+    if any(v != "-" for v in current_vals):
+        parts.append(section("정격 출력전류", current_vals))
+    parts += [
         section("인터페이스", interface_vals),
         section("호환 서보모터", motor_vals),
         section("브레이크 안내", brake_vals),
@@ -232,12 +246,18 @@ async def find_drives_compatible_with_motor(motor_model: str, db: AsyncSession) 
     detail_blocks = []
     for p, s in matched:
         capacity_w = s.extra_specs.get("capacity_w") if s.extra_specs else None
-        capacity_label = f"{capacity_w:g}W" if capacity_w else "-"
-        detail_blocks.append(_single_block(p, s, capacity_w) if capacity_w else (
-            f"**{p.manufacturer} {p.model_name}**\n"
-            f"인터페이스: {s.extra_specs.get('interface_note', '-') if s.extra_specs else '-'}\n"
-            f"정격 출력전류: {s.extra_specs.get('rated_output_current_a', '-') if s.extra_specs else '-'}A"
-        ))
+        if capacity_w:
+            detail_blocks.append(_single_block(p, s, capacity_w))
+            continue
+
+        fallback_lines = [
+            f"**{p.manufacturer} {p.model_name}**",
+            f"인터페이스: {s.extra_specs.get('interface_note', '-') if s.extra_specs else '-'}",
+        ]
+        current_a = s.extra_specs.get("rated_output_current_a") if s.extra_specs else None
+        if current_a is not None:
+            fallback_lines.append(f"정격 출력전류: {current_a}A")
+        detail_blocks.append("\n".join(fallback_lines))
 
     header = (
         f"**{motor_model}** 서보모터와 호환 가능한 서보드라이브 {len(matched)}종:"
@@ -249,15 +269,17 @@ async def find_drives_compatible_with_motor(motor_model: str, db: AsyncSession) 
     if _motor_has_registered_specs(motor_model, rows):
         return f"{header}\n\n{body}"
 
+    # 마감 문구(참고용 안내 + 문의 전화번호)는 _DIMENSION_DISCLAIMER 하나로 통일해서 붙인다.
+    # 치수 등록 케이스(위 return)는 find_reducer_compat()가 같은 disclaimer를 붙이므로
+    # 여기서 또 붙이면 한 응답에 중복 — 이 분기(미등록)에서만 여기서 붙인다.
     motor_size_note = (
         "\n\n⚠️ 모터 자체의 외형치수(프레임 사이즈/축 지름 등)는 확인된 카탈로그 도면이 "
         "없어 안내드리기 어렵습니다. 감속기 연결 등 치수가 중요한 작업이시라면, 반드시 "
         "제품 명판이나 제조사 정식 카탈로그로 직접 확인 부탁드립니다. 잘못된 치수 안내로 "
-        "커플링 등이 안 맞는 경우가 생길 수 있어 확실하지 않은 수치는 알려드리지 않습니다.\n"
-        "☎️ 정확한 치수가 필요하시면 현대자동화(010-3861-2030)로 문의 주세요."
+        "커플링 등이 안 맞는 경우가 생길 수 있어 확실하지 않은 수치는 알려드리지 않습니다."
     )
 
-    return f"{header}\n\n{body}{motor_size_note}"
+    return _with_dimension_disclaimer(f"{header}\n\n{body}{motor_size_note}")
 
 
 async def _all_servo_rows(db: AsyncSession) -> list[tuple[Product, Specification]]:
@@ -350,6 +372,12 @@ def _format_motor_spec_block(motor_key: str, motor_data: dict, reducer_rows: lis
     if dim_items:
         lines.append(f"치수: {' | '.join(dim_items)}")
 
+    # 감속기 섹션 출력 기준(정책):
+    # - motor_data에 큐레이션된 reducers 목록이 있으면 그대로 출력.
+    # - 없지만 축경(shaft_diameter_mm)이 있으면 AB/ABR 카탈로그로 자동매칭 시도
+    #   (매칭 0건이어도 "조회는 했으나 안 맞음"은 정보성이 있으므로 그대로 출력).
+    # - 축경조차 없으면 판단 근거 자체가 없는 것이므로 "미등록" 같은 자리채움 문구를
+    #   내지 않고 감속기 섹션을 통째로 생략한다.
     reducers = motor_data.get("reducers") or []
     if reducers:
         reducer_lines = []
@@ -363,9 +391,7 @@ def _format_motor_spec_block(motor_key: str, motor_data: dict, reducer_rows: lis
         lines.append("결합 가능 감속기:\n" + "\n".join(f"  - {rl}" for rl in reducer_lines))
     else:
         shaft_mm = dims.get("shaft_diameter_mm")
-        if shaft_mm is None:
-            lines.append("결합 가능 감속기: 감속기 호환 정보 미등록")
-        else:
+        if shaft_mm is not None:
             auto_matches = _match_reducers_by_bore(shaft_mm, reducer_rows)
             if auto_matches:
                 lines.append(
@@ -376,6 +402,7 @@ def _format_motor_spec_block(motor_key: str, motor_data: dict, reducer_rows: lis
                     "결합 가능 감속기: AB/ABR 라인업 내 호환 모델 없음 "
                     "(다른 감속기 시리즈 또는 커스텀 확인 필요)"
                 )
+        # else: 축경 미등록 = 감속기 호환 여부를 판단할 근거가 없음 → 섹션 생략
 
     return "\n".join(lines)
 
