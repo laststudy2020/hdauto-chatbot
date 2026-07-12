@@ -4,7 +4,7 @@
 from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.models import Product, Specification, Replacement, ProductStatus
+from app.db.models import Product, Specification, Replacement, ProductStatus, Reducer
 
 _KNOWN_CAPACITIES_W = [50, 100, 200, 400, 500, 600, 750, 1000, 1500, 2000, 3000, 3500, 5000, 6000, 7000, 7500, 11000, 15000]
 
@@ -17,6 +17,12 @@ _DIMENSION_DISCLAIMER = (
 
 def _with_dimension_disclaimer(text: str) -> str:
     return text + _DIMENSION_DISCLAIMER
+
+
+# ─── 감속기 자동매칭 결과에 항상 첨부하는 어댑터 확인 문구 (치수 disclaimer와 별개) ───
+_REDUCER_ADAPTER_DISCLAIMER = (
+    "\n\n🔩 정확한 모터 장착 어댑터(C1~C10)는 APEX 측 확인이 필요합니다."
+)
 
 
 async def find_servo_by_capacity(capacity_w: float, db: AsyncSession) -> str:
@@ -238,7 +244,46 @@ async def _all_servo_rows(db: AsyncSession) -> list[tuple[Product, Specification
     return result.all()
 
 
-def _format_motor_spec_block(motor_key: str, motor_data: dict) -> str:
+async def _all_reducer_rows(db: AsyncSession) -> list[Reducer]:
+    result = await db.execute(select(Reducer))
+    return list(result.scalars().all())
+
+
+def _match_reducers_by_bore(shaft_mm: float, reducer_rows: list[Reducer]) -> list[tuple[Reducer, str]]:
+    """축경(mm) 기준으로 호환 가능한 감속기를 찾는다.
+
+    단순히 '축경 <= 입력홀'인 행을 전부 반환하지 않는다 — 그러면 14mm 모터에도
+    입력홀 <=48mm인 AB220(2000Nm급 대형 감속기)까지 걸려 숫자로는 맞지만 실제로는
+    터무니없는 추천이 된다. 대신 이 축경을 수용하는 행들 중 '가장 작은 입력홀 등급'에
+    해당하는 행만 반환한다 (동급 여러 시리즈/단수가 동점일 수 있음).
+    """
+    fits: list[tuple[Reducer, float, str]] = []
+    for r in reducer_rows:
+        if r.input_bore_std_mm is not None and shaft_mm <= r.input_bore_std_mm:
+            fits.append((r, r.input_bore_std_mm, "표준"))
+        elif r.input_bore_optional_mm is not None and shaft_mm <= r.input_bore_optional_mm:
+            fits.append((r, r.input_bore_optional_mm, "옵션 주문 필요"))
+
+    if not fits:
+        return []
+
+    min_bore = min(bore for _, bore, _ in fits)
+    matches = [(r, grade) for r, bore, grade in fits if bore == min_bore]
+    matches.sort(key=lambda m: (m[0].series, m[0].model_name, m[0].stage))
+    return matches
+
+
+def _format_reducer_matches(shaft_mm: float, matches: list[tuple[Reducer, str]]) -> str:
+    lines = [f"축경 {shaft_mm:g}mm 기준 호환 가능 감속기 {len(matches)}건:"]
+    for r, grade in matches:
+        bore_note = f"≤{r.input_bore_std_mm:g}mm"
+        if r.input_bore_optional_mm is not None:
+            bore_note += f"(옵션 ≤{r.input_bore_optional_mm:g}mm)"
+        lines.append(f"- {r.model_name} ({r.stage}단, 입력홀 {bore_note}) — {grade}")
+    return "\n".join(lines)
+
+
+def _format_motor_spec_block(motor_key: str, motor_data: dict, reducer_rows: list[Reducer]) -> str:
     """motor_specs[모터명] 항목 하나(전기사양+치수+감속기)를 출력 블록으로 포맷."""
     lines = [f"**{motor_key}**"]
 
@@ -291,7 +336,20 @@ def _format_motor_spec_block(motor_key: str, motor_data: dict) -> str:
             reducer_lines.append(" · ".join(parts))
         lines.append("결합 가능 감속기:\n" + "\n".join(f"  - {rl}" for rl in reducer_lines))
     else:
-        lines.append("결합 가능 감속기: 감속기 호환 정보 미등록")
+        shaft_mm = dims.get("shaft_diameter_mm")
+        if shaft_mm is None:
+            lines.append("결합 가능 감속기: 감속기 호환 정보 미등록")
+        else:
+            auto_matches = _match_reducers_by_bore(shaft_mm, reducer_rows)
+            if auto_matches:
+                lines.append(
+                    _format_reducer_matches(shaft_mm, auto_matches) + _REDUCER_ADAPTER_DISCLAIMER
+                )
+            else:
+                lines.append(
+                    "결합 가능 감속기: AB/ABR 라인업 내 호환 모델 없음 "
+                    "(다른 감속기 시리즈 또는 커스텀 확인 필요)"
+                )
 
     return "\n".join(lines)
 
@@ -317,6 +375,7 @@ async def find_reducer_compat(model_name: str, db: AsyncSession) -> str | None:
       → 호출부가 기존 폴백(일반 스펙 조회 등)으로 넘어가게 함.
     """
     rows = await _all_servo_rows(db)
+    reducer_rows = await _all_reducer_rows(db)
     key = model_name.strip().lower()
 
     # 1) 드라이브 자체 모델명/시리즈로 매칭
@@ -324,7 +383,7 @@ async def find_reducer_compat(model_name: str, db: AsyncSession) -> str | None:
         if key in p.model_name.lower() or (p.series and key in p.series.lower()):
             motor_specs = (s.extra_specs or {}).get("motor_specs") or {}
             if motor_specs:
-                blocks = [_format_motor_spec_block(m, d) for m, d in motor_specs.items()]
+                blocks = [_format_motor_spec_block(m, d, reducer_rows) for m, d in motor_specs.items()]
                 header = f"**{p.manufacturer} {p.model_name}** 호환 모터 결합사양:"
                 return _with_dimension_disclaimer(f"{header}\n\n" + "\n\n".join(blocks))
 
@@ -334,7 +393,7 @@ async def find_reducer_compat(model_name: str, db: AsyncSession) -> str | None:
         motor_specs = (s.extra_specs or {}).get("motor_specs") or {}
         for motor_key, motor_data in motor_specs.items():
             if key in motor_key.lower() or motor_key.lower() in key:
-                block = _format_motor_spec_block(motor_key, motor_data)
+                block = _format_motor_spec_block(motor_key, motor_data, reducer_rows)
                 matched_blocks.append(f"(호환 드라이브: {p.manufacturer} {p.model_name})\n{block}")
 
     if not matched_blocks:
