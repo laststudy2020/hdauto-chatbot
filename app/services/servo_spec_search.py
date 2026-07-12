@@ -1,6 +1,8 @@
 """서보드라이브 용량(W) 기반 추천 검색 + 모델별 상세조회 + 모터 역검색
 (v9 — 드라이브 상세검색 시 단종/대체품/호환모터/타사비교 통합, 모터 검색시 호환드라이브 역검색 추가,
 감속기 결합사양(motor_specs) 양방향 검색 추가)"""
+import re
+
 from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +25,29 @@ def _with_dimension_disclaimer(text: str) -> str:
 _REDUCER_ADAPTER_DISCLAIMER = (
     "\n\n🔩 정확한 모터 장착 어댑터(C1~C10)는 APEX 측 확인이 필요합니다."
 )
+
+
+def _drive_family_key(model_name: str) -> str:
+    """MR-J2S-10A/10A1처럼 '용량코드+인터페이스문자+단상 변형 접미 1' 패턴으로 등록된
+    모델명에서 단상(100-120V) 변형 접미사 '1'을 제거해 동일 계열 키를 만든다.
+    표시되는 스펙(무게/인터페이스/호환모터)이 사실상 동일한 A/A1, B/B1 쌍만 묶고,
+    실제로 인터페이스가 다른 A 계열과 B 계열은 구분되게 유지한다."""
+    m = re.match(r"^(.*\d[A-Za-z])1$", model_name)
+    return m.group(1) if m else model_name
+
+
+def _dedupe_drive_pairs_by_family(pairs: list) -> list:
+    """동일 계열(단상/삼상 변형만 다른) 드라이브 중복을 제거하고 계열당 1건만 남긴다.
+    먼저 나온 항목(정렬 후 대표값)을 계열 대표로 남긴다."""
+    seen_families: set[str] = set()
+    deduped = []
+    for p, s in pairs:
+        family = _drive_family_key(p.model_name)
+        if family in seen_families:
+            continue
+        seen_families.add(family)
+        deduped.append((p, s))
+    return deduped
 
 
 async def find_servo_by_capacity(capacity_w: float, db: AsyncSession) -> str:
@@ -202,6 +227,7 @@ async def find_drives_compatible_with_motor(motor_model: str, db: AsyncSession) 
         return None
 
     matched.sort(key=lambda ps: (ps[0].manufacturer, ps[0].model_name))
+    matched = _dedupe_drive_pairs_by_family(matched)
 
     detail_blocks = []
     for p, s in matched:
@@ -388,11 +414,18 @@ async def find_reducer_compat(model_name: str, db: AsyncSession) -> str | None:
                 return _with_dimension_disclaimer(f"{header}\n\n" + "\n\n".join(blocks))
 
     # 2) 모터명으로 매칭 (여러 드라이브에 걸쳐 등록돼 있을 수 있음 — 모두 수집)
+    #    단, MR-J2S-10A/10A1처럼 같은 계열(단상 변형)에 동일 모터가 중복 등록된 경우
+    #    결합사양 블록이 그대로 반복되므로 계열당 1건만 남긴다.
     matched_blocks = []
+    seen_families: set[str] = set()
     for p, s in rows:
         motor_specs = (s.extra_specs or {}).get("motor_specs") or {}
         for motor_key, motor_data in motor_specs.items():
             if key in motor_key.lower() or motor_key.lower() in key:
+                family = _drive_family_key(p.model_name)
+                if family in seen_families:
+                    continue
+                seen_families.add(family)
                 block = _format_motor_spec_block(motor_key, motor_data, reducer_rows)
                 matched_blocks.append(f"(호환 드라이브: {p.manufacturer} {p.model_name})\n{block}")
 
