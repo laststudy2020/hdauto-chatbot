@@ -10,6 +10,27 @@ from app.db.models import Product, Specification, Replacement, ProductStatus, Re
 
 _KNOWN_CAPACITIES_W = [50, 100, 200, 400, 500, 600, 750, 1000, 1500, 2000, 3000, 3500, 5000, 6000, 7000, 7500, 11000, 15000]
 
+# ─── J4 시리즈 기준 사이즈 테이블 (용량W → 형명(KR/MR)/플랜지프레임/서보드라이브A·B).
+# J2S 등 타 시리즈 모터가 motor_specs에 실측 등록돼 있지 않을 때 "동일 용량이면 동일
+# 프레임" 규칙으로 사이즈를 유추하는 폴백 근거로만 쓴다 — 실측 motor_specs 항목이 있으면
+# 항상 그쪽이 우선(find_reducer_compat 참조). register_j4_motor_sizes.py가 이 표를 그대로
+# MR-J4-xxA/xxB의 motor_specs에도 등록해, HG-KR/HG-MR 자체 조회도 실측 경로로 답한다. ───
+J4_SIZE_TABLE = [
+    {"capacity_w": 50, "hg_kr": "HG-KR053", "hg_mr": "HG-MR053", "frame_mm": 40, "drive_a": "MR-J4-10A", "drive_b": "MR-J4-10B"},
+    {"capacity_w": 100, "hg_kr": "HG-KR13", "hg_mr": "HG-MR13", "frame_mm": 40, "drive_a": "MR-J4-10A", "drive_b": "MR-J4-10B"},
+    {"capacity_w": 200, "hg_kr": "HG-KR23", "hg_mr": "HG-MR23", "frame_mm": 60, "drive_a": "MR-J4-20A", "drive_b": "MR-J4-20B"},
+    {"capacity_w": 400, "hg_kr": "HG-KR43", "hg_mr": "HG-MR43", "frame_mm": 60, "drive_a": "MR-J4-40A", "drive_b": "MR-J4-40B"},
+    {"capacity_w": 750, "hg_kr": "HG-KR73", "hg_mr": "HG-MR73", "frame_mm": 80, "drive_a": "MR-J4-70A", "drive_b": "MR-J4-70B"},
+    {"capacity_w": 500, "hg_kr": "HG-SR52", "hg_mr": "HG-MR52", "frame_mm": 130, "drive_a": "MR-J4-60A", "drive_b": "MR-J4-60B"},
+    {"capacity_w": 1000, "hg_kr": "HG-SR102", "hg_mr": "HG-MR102", "frame_mm": 130, "drive_a": "MR-J4-100A", "drive_b": "MR-J4-100B"},
+    {"capacity_w": 1500, "hg_kr": "HG-SR152", "hg_mr": "HG-MR152", "frame_mm": 130, "drive_a": "MR-J4-200A", "drive_b": "MR-J4-200B"},
+    {"capacity_w": 2000, "hg_kr": "HG-SR202", "hg_mr": "HG-MR202", "frame_mm": 176, "drive_a": "MR-J4-200A", "drive_b": "MR-J4-200B"},
+    {"capacity_w": 3500, "hg_kr": "HG-SR352", "hg_mr": "HG-MR352", "frame_mm": 176, "drive_a": "MR-J4-350A", "drive_b": "MR-J4-350B"},
+    {"capacity_w": 5000, "hg_kr": "HG-SR502", "hg_mr": "HG-MR502", "frame_mm": 176, "drive_a": "MR-J4-500A", "drive_b": "MR-J4-500B"},
+    {"capacity_w": 7000, "hg_kr": "HG-SR702", "hg_mr": "HG-MR702", "frame_mm": 176, "drive_a": "MR-J4-700A", "drive_b": "MR-J4-700B"},
+]
+_J4_SIZE_BY_CAPACITY: dict[float, dict] = {row["capacity_w"]: row for row in J4_SIZE_TABLE}
+
 # ─── 모터 물리치수/감속기 결합사양 안내 시 항상 첨부하는 면책 문구 (단일 관리 지점).
 # 치수가 등록된 경우/미등록인 경우 모두 이 문구 하나로 통일해서 끝에 붙인다 —
 # 두 경로가 서로 다른 문구를 쓰면 같은 챗봇인데 안내가 다르다는 혼동을 준다. ───
@@ -28,6 +49,27 @@ def _with_dimension_disclaimer(text: str) -> str:
 _REDUCER_ADAPTER_DISCLAIMER = (
     "\n\n🔩 정확한 모터 장착 어댑터(C1~C10)는 APEX 측 확인이 필요합니다."
 )
+
+
+_MOTOR_NAME_PREFIXES = ("HG-", "HC-", "HA-")
+_BRAKE_SAME_SIZE_NOTE = "브레이크 내장 모델로 사이즈는 동일합니다."
+
+
+def _is_motor_model_name(name: str) -> bool:
+    """HG-/HC-/HA-로 시작하면 서보'모터' 형명, MR-로 시작하면 서보'드라이브' 형명.
+    드라이브 쪽 B(예: MR-J4-70B)는 SSCNET 인터페이스를 뜻하므로 브레이크 판단 대상에서
+    제외해야 한다 — 호출측은 이 함수로 먼저 걸러낸 뒤에만 _split_brake_suffix를 쓴다."""
+    return name.strip().upper().startswith(_MOTOR_NAME_PREFIXES)
+
+
+def _split_brake_suffix(motor_name: str) -> tuple[str, bool]:
+    """모터 형명 끝의 브레이크 내장 접미사 'B'를 분리한다.
+    숫자 바로 뒤에 오는 B만 브레이크로 간주한다(예: HC-KFS43B -> ("HC-KFS43", True)).
+    'M' 등 다른 접미사나, 원래 숫자로 끝나는 형명은 그대로 반환한다."""
+    stripped = motor_name.strip()
+    if len(stripped) >= 2 and stripped[-1].upper() == "B" and stripped[-2].isdigit():
+        return stripped[:-1], True
+    return stripped, False
 
 
 def _drive_family_key(model_name: str) -> str:
