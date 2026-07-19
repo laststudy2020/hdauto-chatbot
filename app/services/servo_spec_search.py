@@ -461,6 +461,54 @@ def _motor_has_registered_specs(motor_model: str, rows: list) -> bool:
     return False
 
 
+def _find_capacity_w_by_compatible_motor(base_motor_name: str, rows: list) -> float | None:
+    """base_motor_name이 어느 드라이브의 compatible_motors에 정확히(대소문자 무시) 등록돼
+    있는지 찾아 그 드라이브의 capacity_w를 반환한다. 부분일치가 아닌 완전일치만 쓴다 —
+    이 값이 J4 사이즈 유추의 근거가 되므로, 느슨한 매칭으로 엉뚱한 용량을 끌어오면 안 된다."""
+    key = base_motor_name.strip().lower()
+    for _, s in rows:
+        if not s.extra_specs:
+            continue
+        motors = s.extra_specs.get("compatible_motors", [])
+        if any(key == m.strip().lower() for m in motors):
+            return s.extra_specs.get("capacity_w")
+    return None
+
+
+def _j2s_to_j4_size_note(model_name: str, rows: list) -> str | None:
+    """J2S 등 타 시리즈 서보모터가 motor_specs에 실측 등록돼 있지 않을 때, 같은 용량의
+    J4 시리즈 모터와 플랜지 프레임 사이즈가 동일하다는 규칙으로 사이즈+대응 서보드라이브를
+    유추해 안내 문구를 만든다. find_reducer_compat()가 실측 motor_specs 매칭에 모두
+    실패한 뒤에만 호출하는 순수 폴백이다. 매칭 근거(같은 용량의 J4 표 행)가 없으면
+    None을 반환해 "찾지 못함" 상태를 그대로 유지한다(추측으로 채우지 않음)."""
+    if not _is_motor_model_name(model_name):
+        return None
+
+    base, has_brake = _split_brake_suffix(model_name)
+
+    if base.upper().startswith("HG-"):
+        return None  # J4 계열 자체 모델은 실측 등록 대상 — 이 폴백을 타지 않는다.
+
+    capacity_w = _find_capacity_w_by_compatible_motor(base, rows)
+    if capacity_w is None:
+        return None
+
+    j4_row = _J4_SIZE_BY_CAPACITY.get(capacity_w)
+    if j4_row is None:
+        return None
+
+    lines = [
+        f"J2S 시리즈이지만 J4 시리즈의 {j4_row['hg_kr']}({capacity_w:g}W) 모델과 사이즈가 "
+        f"동일하여 해당 값을 기준으로 안내드립니다.",
+        f"플랜지 프레임: □{j4_row['frame_mm']}mm",
+        f"대응 서보드라이브: {j4_row['drive_a']}, {j4_row['drive_b']}",
+    ]
+    if has_brake:
+        lines.append(_BRAKE_SAME_SIZE_NOTE)
+
+    return "\n".join(lines)
+
+
 async def find_reducer_compat(model_name: str, db: AsyncSession) -> str | None:
     """드라이브 모델명 또는 모터 모델명으로 등록된 감속기 결합사양(motor_specs)을 조회.
 
@@ -483,8 +531,9 @@ async def find_reducer_compat(model_name: str, db: AsyncSession) -> str | None:
                 return _with_dimension_disclaimer(f"{header}\n\n" + "\n\n".join(blocks))
 
     # 2) 모터명으로 매칭 (여러 드라이브에 걸쳐 등록돼 있을 수 있음 — 모두 수집)
-    #    단, MR-J2S-10A/10A1처럼 같은 계열(단상 변형)에 동일 모터가 중복 등록된 경우
-    #    결합사양 블록이 그대로 반복되므로 계열당 1건만 남긴다.
+    _, query_has_brake = (
+        _split_brake_suffix(model_name) if _is_motor_model_name(model_name) else (model_name, False)
+    )
     matched_blocks = []
     seen_families: set[str] = set()
     for p, s in rows:
@@ -496,13 +545,21 @@ async def find_reducer_compat(model_name: str, db: AsyncSession) -> str | None:
                     continue
                 seen_families.add(family)
                 block = _format_motor_spec_block(motor_key, motor_data, reducer_rows)
+                if query_has_brake:
+                    block += f"\n※ {_BRAKE_SAME_SIZE_NOTE}"
                 matched_blocks.append(f"(호환 드라이브: {p.manufacturer} {p.model_name})\n{block}")
 
-    if not matched_blocks:
-        return None
+    if matched_blocks:
+        header = f"**{model_name}** 결합사양:"
+        return _with_dimension_disclaimer(f"{header}\n\n" + "\n\n".join(matched_blocks))
 
-    header = f"**{model_name}** 결합사양:"
-    return _with_dimension_disclaimer(f"{header}\n\n" + "\n\n".join(matched_blocks))
+    # 3) 실측 motor_specs가 전혀 없는 J2S 등 타 시리즈 모터 -> J4 동일 용량 사이즈 유추 폴백
+    j2s_note = _j2s_to_j4_size_note(model_name, rows)
+    if j2s_note:
+        header = f"**{model_name}** 결합사양(J4 시리즈 기준 유추):"
+        return _with_dimension_disclaimer(f"{header}\n\n{j2s_note}")
+
+    return None
 
 
 async def find_motors_by_reducer(reducer_model: str, db: AsyncSession) -> str | None:
