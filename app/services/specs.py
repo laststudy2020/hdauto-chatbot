@@ -5,7 +5,8 @@ from app.db.models import Product, Specification
 from app.core.clova import clova_client, SYSTEM_PROMPTS
 
 
-async def lookup_specs(model_name: str, db: AsyncSession) -> str:
+async def lookup_specs(model_name: str, db: AsyncSession) -> tuple[str, bool]:
+    """(응답 텍스트, DB에서 실제로 매칭됐는지) 튜플 반환 — 근거는 find_replacement 참조(H6)."""
     stmt = (
         select(Product)
         .options(selectinload(Product.specs))
@@ -23,7 +24,7 @@ async def lookup_specs(model_name: str, db: AsyncSession) -> str:
         return (
             f"'{model_name}' 모델의 스펙 정보를 찾지 못했습니다.\n"
             f"정확한 모델명을 확인하시거나 현대자동화로 문의해 주세요."
-        )
+        ), False
 
     context = _build_context(products)
     response = await clova_client.chat_completion(
@@ -34,7 +35,7 @@ async def lookup_specs(model_name: str, db: AsyncSession) -> str:
         ),
         temperature=0.1,
     )
-    return response
+    return response, True
 
 
 def _build_context(products: list) -> str:

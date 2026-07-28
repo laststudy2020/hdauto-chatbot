@@ -7,7 +7,14 @@ from app.services.inventory import get_stock_state, COMPANY_PHONE
 from app.services.servo_spec_search import get_servo_companion_note
 
 
-async def find_replacement(model_name: str, db: AsyncSession) -> str:
+async def find_replacement(model_name: str, db: AsyncSession) -> tuple[str, bool]:
+    """(응답 텍스트, DB에서 실제로 매칭됐는지) 튜플 반환.
+
+    matched는 응답 문자열 내용과 무관하게 "DB 검색이 뭔가를 찾았는가"만 나타낸다.
+    호출측(chatbot._route)이 문자열에 '찾지 못했습니다'가 포함됐는지로 폴백 여부를
+    판단하면, CLOVA가 생성한 자유서술 답변에 그 문구가 우연히 섞였을 때 정상적으로
+    찾은 DB 답변이 웹검색으로 잘못 덮어써질 수 있다(코드리뷰 H6).
+    """
     # 1) 모델명으로 제품 검색 (부분 일치)
     stmt = (
         select(Product)
@@ -32,11 +39,11 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
                 f"서보모터로 확인됩니다.{companion_note}\n\n"
                 f"📞 정확한 재고/사양은 현대자동화로 문의해 주세요.\n"
                 f"☎️ {COMPANY_PHONE}"
-            )
+            ), True
         return (
             f"'{model_name}' 모델 정보를 찾지 못했습니다.\n"
             f"정확한 모델명을 확인하시거나 현대자동화로 문의해 주세요."
-        )
+        ), False
 
     # 2) 현재 판매 중인 제품 → 재고 상태까지 같이 확인해서 답변
     #    (단종된 건 아니라도 일시 품절/소진임박일 수 있어, "정상 판매중"이라고만 하면
@@ -63,7 +70,7 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
                 f"{companion_note}\n\n"
                 f"📞 입고 일정은 현대자동화로 문의해 주세요.\n"
                 f"☎️ {COMPANY_PHONE}"
-            )
+            ), True
 
         if stock["state"] == "low_stock":
             return (
@@ -71,13 +78,13 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
                 f"재고 {stock['quantity']}개 남았습니다 (소진 임박).\n"
                 f"제조사: {product.manufacturer} | 시리즈: {product.series}{spec_info}"
                 f"{companion_note}"
-            )
+            ), True
 
         return (
             f"'{product.model_name}'은(는) 현재 정상 판매 중입니다.\n"
             f"제조사: {product.manufacturer} | 시리즈: {product.series}"
             f"{spec_info}{companion_note}"
-        )
+        ), True
 
     # 3) 단종 → 대체품 검색
     stmt2 = (
@@ -98,7 +105,7 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
             f"'{product.model_name}'은(는) 단종 제품이지만\n"
             f"등록된 대체품 정보가 없습니다. 현대자동화로 문의해 주세요."
         )
-        return base + cross_brand_note + companion_note
+        return base + cross_brand_note + companion_note, True
 
     # 4) RAG 컨텍스트 구성 후 HyperCLOVA 답변 생성
     context = _build_context(product, replacements)
@@ -116,7 +123,7 @@ async def find_replacement(model_name: str, db: AsyncSession) -> str:
     response += _build_cross_brand_note(product)
     response += await get_servo_companion_note(product, model_name, db)
 
-    return response
+    return response, True
 
 
 def _build_cross_brand_note(product: Product) -> str:

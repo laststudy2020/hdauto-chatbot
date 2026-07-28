@@ -245,7 +245,7 @@ async def find_servo_drive_details(model_name: str, db: AsyncSession) -> str | N
     #    지연 임포트: replacement.py가 inventory.py를 참조하고 inventory.py가
     #    이 모듈을 참조하는 순환참조를 피하기 위해 함수 내부에서 임포트.
     from app.services.replacement import find_replacement
-    replacement_info = await find_replacement(model_name, db)
+    replacement_info, _ = await find_replacement(model_name, db)
     sections.append(replacement_info)
 
     # 2) 타 제조사 동일 용량 비교
