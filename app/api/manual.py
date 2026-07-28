@@ -27,7 +27,10 @@ _job_status: dict = {}
 @router.post("/upload", summary="단건 PDF 업로드")
 async def upload_manual(
     file: UploadFile = File(...),
-    manufacturer: str = Form(..., description="제조사명 (예: 미쓰비시)"),
+    # seed.py/등록 스크립트의 제조사명 표기는 전부 영문("Mitsubishi")이라 폼 예시도 통일.
+    # 한글("미쓰비시")로 입력하면 dedup(==)/조회 필터가 정확 일치라 별도 계열로
+    # 쪼개져 저장되고 조회 시 절반이 누락되는 문제가 있었다(코드리뷰 H7).
+    manufacturer: str = Form(..., description="제조사명 (예: Mitsubishi — seed 데이터와 동일한 영문 표기 사용)"),
     series: str = Form(..., description="시리즈명 (예: MELSERVO-J4)"),
     db: AsyncSession = Depends(get_db),
 ):
