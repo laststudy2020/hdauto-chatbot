@@ -32,6 +32,18 @@ MY_MALL_KEYWORDS = ["현대자동화", "hdauto"]
 _DEBOUNCE_SECONDS = 60 * 60
 _last_notified: dict[str, float] = {}
 
+# 카카오 토큰 갱신 실패 상태(서버 재시작 시 초기화). refresh_token이 만료/무효화되면
+# 로그만 남기고 이후 모든 알림이 계속 조용히 실패하던 것을, get_kakao_notify_health()로
+# 조회 가능하게 노출해 관리자가 재인증 필요 여부를 확인할 수 있게 한다(코드리뷰 H10).
+_kakao_last_failure: dict | None = None
+
+
+def get_kakao_notify_health() -> dict:
+    """카카오 알림 발송 가능 상태. /api/admin/kakao-status에서 노출."""
+    if _kakao_last_failure is None:
+        return {"status": "ok"}
+    return {"status": "failing", **_kakao_last_failure}
+
 
 # ───────────────────── 카카오 토큰 (DB 저장) ─────────────────────
 
@@ -60,9 +72,16 @@ async def _save_kakao_token(db: AsyncSession, token: dict):
 
 
 async def _get_valid_kakao_access_token(db: AsyncSession) -> str | None:
+    global _kakao_last_failure
+
     row = await _load_kakao_token(db)
     if not row:
         logger.warning("[카카오알림] kakao_tokens 테이블에 토큰 없음 — 최초 인증 필요")
+        if _kakao_last_failure is None:
+            _kakao_last_failure = {
+                "reason": "토큰 없음 — 최초 인증 필요",
+                "since": datetime.utcnow().isoformat(),
+            }
         return None
 
     elapsed = (datetime.utcnow() - row.obtained_at).total_seconds()
@@ -81,11 +100,20 @@ async def _get_valid_kakao_access_token(db: AsyncSession) -> str | None:
         )
     if not resp.is_success:
         logger.error(f"[카카오알림] 토큰 갱신 실패: {resp.text}")
+        # refresh_token 만료/무효화 시 로그만 남기고 넘어가면 관리자가 알 방법이
+        # 없어 이후 모든 재고 알림이 계속 조용히 실패한다(코드리뷰 H10) — 실패
+        # 상태를 기억해 get_kakao_notify_health()로 조회 가능하게 한다.
+        if "since" not in (_kakao_last_failure or {}):
+            _kakao_last_failure = {
+                "reason": f"토큰 갱신 실패 (재인증 필요): {resp.text[:200]}",
+                "since": datetime.utcnow().isoformat(),
+            }
         return None
 
     new_token = resp.json()
     new_token.setdefault("refresh_token", row.refresh_token)
     await _save_kakao_token(db, new_token)
+    _kakao_last_failure = None
     return new_token["access_token"]
 
 

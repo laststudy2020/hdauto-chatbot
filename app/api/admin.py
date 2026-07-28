@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Inventory, Product
 from app.services.inventory import check_low_stock
+from app.services.admin_notify import get_kakao_notify_health
 from app.config import get_settings
 from app.core.api_auth import require_admin_key
 
@@ -91,6 +92,13 @@ async def update_stock(
         "min_threshold": inv.min_threshold,
         "alert_needed": is_low,
     }
+
+@router.get("/kakao-status", summary="카카오 재고알림 발송 가능 상태 확인")
+async def kakao_status():
+    """refresh_token 만료/무효화로 알림이 조용히 실패 중인지 확인 (코드리뷰 H10).
+    status가 "failing"이면 kakao_test/kakao_auth_setup.py로 재인증 필요."""
+    return get_kakao_notify_health()
+
 
 @router.get("/myip", summary="서버 아웃바운드 IP 확인 (임시)")
 async def get_server_ip():
