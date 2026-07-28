@@ -32,3 +32,14 @@ __pycache__/
 
 # subagent-driven-development scratch state
 .superpowers/
+
+# Kakao OAuth 토큰 (실제 자격증명)
+kakao_test/token.json
+kakao_test/__pycache__/
+
+# 대용량/임시 데이터 산출물
+products_raw.json
+matching_analysis.json
+unmatched_diagnosis.json
+backups/
+docs/datasheets/**/_pages_tmp/
