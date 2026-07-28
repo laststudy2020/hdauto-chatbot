@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlalchemy import select, func, delete
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Product, Replacement, Specification, ProductStatus, Inventory
@@ -24,7 +25,12 @@ async def create_product(data: ProductCreate, db: AsyncSession = Depends(get_db)
         our_price=data.our_price,
     )
     db.add(product)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # products.model_name UNIQUE 제약(코드리뷰 H5) 위반 시 500 대신 409로 안내.
+        await db.rollback()
+        raise HTTPException(409, f"'{data.model_name}' 모델명이 이미 등록되어 있습니다.")
     await db.refresh(product)
     return {"id": product.id, "model_name": product.model_name, "status": "created"}
 
