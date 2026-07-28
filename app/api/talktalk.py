@@ -186,11 +186,13 @@ async def _process_message(message: str, user_id: str, db: AsyncSession) -> tupl
     """
     
     from app.api.chatbot import _route
-    from app.core.admin_commands import handle_admin_command
+    from app.core.admin_commands import is_admin_command, handle_admin_command
 
-    # 관리자 명령어 처리 (ADMIN_COMMAND_KEY로 시작하는 메시지)
-    admin_key = getattr(settings, "ADMIN_COMMAND_KEY", "")
-    if admin_key and message.startswith(admin_key):
+    # 관리자 명령어 처리 — 웹챗(chatbot.py)과 동일하게 "대체품등록[" 접두사로 게이트하고
+    # 실제 키 검증은 handle_admin_command 내부에 위임한다. 이전에는 message.startswith(키)로
+    # 검사해 실제 명령어 포맷("대체품등록[키]: ...")과 절대 일치하지 않아 톡톡에서
+    # 관리자 명령이 사실상 죽어있었다(코드리뷰 H1).
+    if is_admin_command(message):
         try:
             admin_reply = await handle_admin_command(message, db)
             if admin_reply:
