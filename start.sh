@@ -12,10 +12,10 @@ echo "[start.sh] tailscaled(userspace 모드) 기동 중..."
 sleep 3
 
 echo "[start.sh] tailnet에 로그인 중..."
-./tailscale --socket=/tmp/tailscale/tailscaled.sock up \
+timeout 30 ./tailscale --socket=/tmp/tailscale/tailscaled.sock up \
   --authkey="${TS_AUTHKEY}" \
   --hostname=hdauto-render \
-  --accept-dns=false || echo "[start.sh] tailscale login 실패 - 계속 진행"
+  --accept-dns=false || echo "[start.sh] tailscale login 실패/타임아웃(30초) - 계속 진행"
 
 echo "[start.sh] SOCKS5 -> NAS DB 포워더 기동 중..."
 python tailscale_proxy.py &

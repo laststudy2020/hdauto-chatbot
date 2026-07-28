@@ -22,6 +22,7 @@ SOCKS_PORT = int(os.getenv("TS_SOCKS5_PORT", "1055"))
 
 DEST_HOST = os.getenv("NAS_TAILSCALE_IP", "")
 DEST_PORT = int(os.getenv("NAS_DB_PORT", "3306"))
+CONNECT_TIMEOUT_SECONDS = float(os.getenv("TS_PROXY_CONNECT_TIMEOUT", "10"))
 
 from python_socks.async_.asyncio import Proxy  # noqa: E402
 
@@ -43,7 +44,12 @@ async def _pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     proxy = Proxy.from_url(f"socks5://{SOCKS_HOST}:{SOCKS_PORT}")
     try:
-        sock = await proxy.connect(dest_host=DEST_HOST, dest_port=DEST_PORT)
+        # tailnet 인증이 지연/실패 중이면 SOCKS5 CONNECT가 응답 없이 멈출 수 있어
+        # 타임아웃 없이는 요청이 무한 대기한다(코드리뷰 H4).
+        sock = await asyncio.wait_for(
+            proxy.connect(dest_host=DEST_HOST, dest_port=DEST_PORT),
+            timeout=CONNECT_TIMEOUT_SECONDS,
+        )
     except Exception as e:
         print(f"[tailscale_proxy] NAS 연결 실패 ({DEST_HOST}:{DEST_PORT}): {e}")
         writer.close()
