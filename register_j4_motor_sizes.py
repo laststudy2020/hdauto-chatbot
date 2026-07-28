@@ -1,15 +1,15 @@
 """
 J4 시리즈(HG-KR/HG-MR) 서보모터 플랜지 프레임 사이즈 등록.
 
-사용자 제공 기준표(용량-형명(KR)-형명(MR)-플랜지프레임-서보드라이브A/B)를 그대로
-motor_specs에 반영한다. 실측 상세 전기사양(토크/관성/전장 등) 출처가 없어
-frame_size_mm(플랜지 프레임)과 power_w만 등록한다 — register_mrj4_servo.py가 이미
-등록해둔 MR-J4-xxA/xxB Product 행에 motor_specs로 병합된다(기존 capacity_w/
-compatible_motors 등은 보존).
+app/services/servo_spec_search.py의 J4_SIZE_TABLE(용량-형명(KR)-형명(MR)-플랜지프레임-
+서보드라이브A/B, J2S->J4 사이즈 유추 폴백의 근거 표이기도 함)을 그대로 motor_specs에
+반영한다. 실측 상세 전기사양(토크/관성/전장 등) 출처가 없어 frame_size_mm(플랜지 프레임)과
+power_w만 등록한다 — register_mrj4_servo.py가 이미 등록해둔 MR-J4-xxA/xxB Product 행에
+motor_specs로 병합된다(기존 capacity_w/compatible_motors 등은 보존).
 
-이 표는 app/services/servo_spec_search.py의 J4_SIZE_TABLE(J2S->J4 사이즈 유추 폴백의
-근거 표)과 동일한 원본 데이터다 — HG-KR/HG-MR 형명 자체를 직접 조회했을 때도 "유추"가
-아닌 실측 경로(find_reducer_compat 2단계)로 같은 값이 나오게 하기 위함.
+기준표를 여기서 다시 정의하지 않고 import하는 이유: HG-KR/HG-MR 형명 자체를 직접
+조회했을 때도 "유추"가 아닌 실측 경로(find_reducer_compat 2단계)로 J2S 유추 답변과
+같은 값이 나와야 하는데, 두 곳에 같은 데이터를 따로 두면 조용히 어긋날 수 있기 때문.
 
 알려진 불일치(임의로 고치지 않고 그대로 둠): register_mrj4_servo.py는 MR-J4-60A/60B를
 capacity_w=600, compatible_motors=["HG-SR51","HG-SR52"]로 이미 등록했으나, 이 표는
@@ -26,22 +26,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 from sqlalchemy import select
 from app.db.database import async_session
 from app.db.models import Product, Specification
-
-# (용량W, 형명KR, 형명MR, 플랜지프레임mm, 드라이브A, 드라이브B)
-J4_SIZE_ROWS = [
-    (50, "HG-KR053", "HG-MR053", 40, "MR-J4-10A", "MR-J4-10B"),
-    (100, "HG-KR13", "HG-MR13", 40, "MR-J4-10A", "MR-J4-10B"),
-    (200, "HG-KR23", "HG-MR23", 60, "MR-J4-20A", "MR-J4-20B"),
-    (400, "HG-KR43", "HG-MR43", 60, "MR-J4-40A", "MR-J4-40B"),
-    (750, "HG-KR73", "HG-MR73", 80, "MR-J4-70A", "MR-J4-70B"),
-    (500, "HG-SR52", "HG-MR52", 130, "MR-J4-60A", "MR-J4-60B"),
-    (1000, "HG-SR102", "HG-MR102", 130, "MR-J4-100A", "MR-J4-100B"),
-    (1500, "HG-SR152", "HG-MR152", 130, "MR-J4-200A", "MR-J4-200B"),
-    (2000, "HG-SR202", "HG-MR202", 176, "MR-J4-200A", "MR-J4-200B"),
-    (3500, "HG-SR352", "HG-MR352", 176, "MR-J4-350A", "MR-J4-350B"),
-    (5000, "HG-SR502", "HG-MR502", 176, "MR-J4-500A", "MR-J4-500B"),
-    (7000, "HG-SR702", "HG-MR702", 176, "MR-J4-700A", "MR-J4-700B"),
-]
+from app.services.servo_spec_search import J4_SIZE_TABLE
 
 
 def _entry(capacity_w: int, frame_mm: int) -> dict:
@@ -74,12 +59,12 @@ async def _merge_motor_specs(db, model_name: str, motor_entries: dict) -> str:
 
 async def main(dry_run: bool = False):
     async with async_session() as db:
-        for capacity_w, hg_kr, hg_mr, frame_mm, drive_a, drive_b in J4_SIZE_ROWS:
+        for row in J4_SIZE_TABLE:
             motor_entries = {
-                hg_kr: _entry(capacity_w, frame_mm),
-                hg_mr: _entry(capacity_w, frame_mm),
+                row["hg_kr"]: _entry(row["capacity_w"], row["frame_mm"]),
+                row["hg_mr"]: _entry(row["capacity_w"], row["frame_mm"]),
             }
-            for model_name in (drive_a, drive_b):
+            for model_name in (row["drive_a"], row["drive_b"]):
                 msg = await _merge_motor_specs(db, model_name, motor_entries)
                 print(msg)
 

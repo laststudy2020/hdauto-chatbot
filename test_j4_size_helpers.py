@@ -8,7 +8,6 @@ sys.stdout.reconfigure(encoding="utf-8")
 from app.services.servo_spec_search import (
     J4_SIZE_TABLE, _J4_SIZE_BY_CAPACITY, _is_motor_model_name, _split_brake_suffix,
 )
-from register_j4_motor_sizes import J4_SIZE_ROWS
 
 failures = []
 
@@ -31,15 +30,11 @@ check("1500W/2000W 둘 다 드라이브A=MR-J4-200A",
       ("MR-J4-200A", "MR-J4-200A"))
 check("미등록 용량(850W)은 없음", 850 in _J4_SIZE_BY_CAPACITY, False)
 
-# ── J4_SIZE_TABLE(폴백 유추 근거)과 J4_SIZE_ROWS(register_j4_motor_sizes.py 실제 등록값)
-# 두 표가 서로 어긋나면, 같은 용량에 대해 J2S 유추 답변과 J4 실측 답변이 달라지는 조용한
-# 데이터 불일치가 생긴다 — 두 표가 항상 같은 데이터임을 여기서 고정한다. ──
-_table_as_rows = [
-    (r["capacity_w"], r["hg_kr"], r["hg_mr"], r["frame_mm"], r["drive_a"], r["drive_b"])
-    for r in J4_SIZE_TABLE
-]
-check("J4_SIZE_TABLE == register_j4_motor_sizes.J4_SIZE_ROWS",
-      set(_table_as_rows), set(J4_SIZE_ROWS))
+# ── register_j4_motor_sizes.py가 자체 사본을 두지 않고 J4_SIZE_TABLE을 그대로
+# import하는지 확인 (단일 소스 유지 스모크 테스트) ──
+from register_j4_motor_sizes import J4_SIZE_TABLE as _imported_table
+check("register_j4_motor_sizes.J4_SIZE_TABLE is servo_spec_search.J4_SIZE_TABLE",
+      _imported_table is J4_SIZE_TABLE, True)
 
 # ── _is_motor_model_name ──
 check("HG- 는 모터", _is_motor_model_name("HG-KR43"), True)

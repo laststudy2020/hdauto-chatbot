@@ -14,7 +14,10 @@ _KNOWN_CAPACITIES_W = [50, 100, 200, 400, 500, 600, 750, 1000, 1500, 2000, 3000,
 # J2S 등 타 시리즈 모터가 motor_specs에 실측 등록돼 있지 않을 때 "동일 용량이면 동일
 # 프레임" 규칙으로 사이즈를 유추하는 폴백 근거로만 쓴다 — 실측 motor_specs 항목이 있으면
 # 항상 그쪽이 우선(find_reducer_compat 참조). register_j4_motor_sizes.py가 이 표를 그대로
-# MR-J4-xxA/xxB의 motor_specs에도 등록해, HG-KR/HG-MR 자체 조회도 실측 경로로 답한다. ───
+# import해서 MR-J4-xxA/xxB의 motor_specs에도 등록해, HG-KR/HG-MR 자체 조회도 실측
+# 경로로 답한다. 신규 시리즈(J5 등) 추가 시에도 사이즈 기준표는 반드시 여기 한 곳에만
+# 정의하고, 등록 스크립트는 값을 복사하지 말고 import해서 쓸 것 — 두 곳에 따로 정의하면
+# 조용히 어긋나는 데이터 불일치가 재발한다. ───
 J4_SIZE_TABLE = [
     {"capacity_w": 50, "hg_kr": "HG-KR053", "hg_mr": "HG-MR053", "frame_mm": 40, "drive_a": "MR-J4-10A", "drive_b": "MR-J4-10B"},
     {"capacity_w": 100, "hg_kr": "HG-KR13", "hg_mr": "HG-MR13", "frame_mm": 40, "drive_a": "MR-J4-10A", "drive_b": "MR-J4-10B"},
