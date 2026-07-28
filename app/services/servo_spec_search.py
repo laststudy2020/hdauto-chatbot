@@ -376,8 +376,14 @@ def _format_reducer_matches(shaft_mm: float, matches: list[tuple[Reducer, str]])
     return "\n".join(lines)
 
 
-def _format_motor_spec_block(motor_key: str, motor_data: dict, reducer_rows: list[Reducer]) -> str:
-    """motor_specs[모터명] 항목 하나(전기사양+치수+감속기)를 출력 블록으로 포맷."""
+def _format_motor_spec_block(motor_key: str, motor_data: dict, reducer_rows: list[Reducer]) -> tuple[str, bool]:
+    """motor_specs[모터명] 항목 하나(전기사양+치수+감속기)를 출력 블록으로 포맷.
+
+    반환값: (블록 텍스트, 🔩 어댑터 확인 문구가 필요한지). 문구를 여기서 바로 붙이면
+    드라이브 하나에 자동매칭된 모터가 여러 개일 때 문구가 모터 개수만큼 반복
+    노출된다 — 호출부가 전체 응답 조립 후 단 한 번만 붙이도록 플래그만 반환한다
+    (치수 disclaimer(_with_dimension_disclaimer)와 동일 패턴, 코드리뷰 H8).
+    """
     lines = [f"**{motor_key}**"]
 
     spec_items = []
@@ -423,6 +429,7 @@ def _format_motor_spec_block(motor_key: str, motor_data: dict, reducer_rows: lis
     #   (매칭 0건이어도 "조회는 했으나 안 맞음"은 정보성이 있으므로 그대로 출력).
     # - 축경조차 없으면 판단 근거 자체가 없는 것이므로 "미등록" 같은 자리채움 문구를
     #   내지 않고 감속기 섹션을 통째로 생략한다.
+    needs_adapter_disclaimer = False
     reducers = motor_data.get("reducers") or []
     if reducers:
         reducer_lines = []
@@ -439,9 +446,8 @@ def _format_motor_spec_block(motor_key: str, motor_data: dict, reducer_rows: lis
         if shaft_mm is not None:
             auto_matches = _match_reducers_by_bore(shaft_mm, reducer_rows)
             if auto_matches:
-                lines.append(
-                    _format_reducer_matches(shaft_mm, auto_matches) + _REDUCER_ADAPTER_DISCLAIMER
-                )
+                lines.append(_format_reducer_matches(shaft_mm, auto_matches))
+                needs_adapter_disclaimer = True
             else:
                 lines.append(
                     "결합 가능 감속기: AB/ABR 라인업 내 호환 모델 없음 "
@@ -449,7 +455,7 @@ def _format_motor_spec_block(motor_key: str, motor_data: dict, reducer_rows: lis
                 )
         # else: 축경 미등록 = 감속기 호환 여부를 판단할 근거가 없음 → 섹션 생략
 
-    return "\n".join(lines)
+    return "\n".join(lines), needs_adapter_disclaimer
 
 
 def _motor_has_registered_specs(motor_model: str, rows: list) -> bool:
@@ -529,15 +535,21 @@ async def find_reducer_compat(model_name: str, db: AsyncSession) -> str | None:
         if key in p.model_name.lower() or (p.series and key in p.series.lower()):
             motor_specs = (s.extra_specs or {}).get("motor_specs") or {}
             if motor_specs:
-                blocks = [_format_motor_spec_block(m, d, reducer_rows) for m, d in motor_specs.items()]
+                block_results = [_format_motor_spec_block(m, d, reducer_rows) for m, d in motor_specs.items()]
+                blocks = [b for b, _ in block_results]
+                needs_adapter_disclaimer = any(flag for _, flag in block_results)
                 header = f"**{p.manufacturer} {p.model_name}** 호환 모터 결합사양:"
-                return _with_dimension_disclaimer(f"{header}\n\n" + "\n\n".join(blocks))
+                body = f"{header}\n\n" + "\n\n".join(blocks)
+                if needs_adapter_disclaimer:
+                    body += _REDUCER_ADAPTER_DISCLAIMER
+                return _with_dimension_disclaimer(body)
 
     # 2) 모터명으로 매칭 (여러 드라이브에 걸쳐 등록돼 있을 수 있음 — 모두 수집)
     _, query_has_brake = (
         _split_brake_suffix(model_name) if _is_motor_model_name(model_name) else (model_name, False)
     )
     matched_blocks = []
+    needs_adapter_disclaimer = False
     seen_families: set[str] = set()
     for p, s in rows:
         motor_specs = (s.extra_specs or {}).get("motor_specs") or {}
@@ -547,14 +559,18 @@ async def find_reducer_compat(model_name: str, db: AsyncSession) -> str | None:
                 if family in seen_families:
                     continue
                 seen_families.add(family)
-                block = _format_motor_spec_block(motor_key, motor_data, reducer_rows)
+                block, flag = _format_motor_spec_block(motor_key, motor_data, reducer_rows)
+                needs_adapter_disclaimer = needs_adapter_disclaimer or flag
                 if query_has_brake:
                     block += f"\n※ {_BRAKE_SAME_SIZE_NOTE}"
                 matched_blocks.append(f"(호환 드라이브: {p.manufacturer} {p.model_name})\n{block}")
 
     if matched_blocks:
         header = f"**{model_name}** 결합사양:"
-        return _with_dimension_disclaimer(f"{header}\n\n" + "\n\n".join(matched_blocks))
+        body = f"{header}\n\n" + "\n\n".join(matched_blocks)
+        if needs_adapter_disclaimer:
+            body += _REDUCER_ADAPTER_DISCLAIMER
+        return _with_dimension_disclaimer(body)
 
     # 3) 실측 motor_specs가 전혀 없는 J2S 등 타 시리즈 모터 -> J4 동일 용량 사이즈 유추 폴백
     j2s_note = _j2s_to_j4_size_note(model_name, rows)

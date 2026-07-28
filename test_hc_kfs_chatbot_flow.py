@@ -89,13 +89,14 @@ async def main():
                 "dimensions": {"shaft_diameter_mm": 100.0},
                 "reducers": [],
             }
-            block = _format_motor_spec_block("TEST-VIRTUAL-100MM", fake_motor_data, reducer_rows)
+            block, needs_adapter_disclaimer = _format_motor_spec_block("TEST-VIRTUAL-100MM", fake_motor_data, reducer_rows)
             print(block)
             assert "AB/ABR 라인업 내 호환 모델 없음" in block, "매칭 없음 문구 누락"
             assert "다른 감속기 시리즈 또는 커스텀 확인 필요" in block, "매칭 없음 안내 문구 불완전"
             assert _REDUCER_ADAPTER_DISCLAIMER.strip() not in block, (
                 "매칭이 없는데 어댑터 확인 문구가 붙음 (매칭 있을 때만 붙어야 함)"
             )
+            assert needs_adapter_disclaimer is False, "매칭이 없으므로 어댑터 문구 플래그도 False여야 함"
             print("PASS\n")
 
             print("모든 테스트 통과.")
