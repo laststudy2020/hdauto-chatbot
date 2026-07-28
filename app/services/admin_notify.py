@@ -191,7 +191,14 @@ async def notify_admin_kakao(
         competitors = []
 
     message = _build_message(model_name, stock_qty, stock_state, our_price, competitors)
-    sent = await _send_kakao_text(db, message)
+    try:
+        sent = await _send_kakao_text(db, message)
+    except Exception as e:
+        # 카카오 발송 실패(네트워크/DNS 등)가 여기서 안 잡히면 예외가 get_inventory_status()를
+        # 거쳐 고객에게 갔어야 할 재고 응답 전체를 범용 오류 메시지로 대체해버린다(코드리뷰 H9).
+        # 관리자 알림은 부가 기능이므로 실패해도 고객 응답에는 영향 주지 않아야 한다.
+        logger.error(f"[카카오알림] 발송 중 예외: {e}")
+        sent = False
 
     # DB 기록 (product가 카탈로그에 있을 때만 — 없으면 FK 위반이라 스킵)
     if product:

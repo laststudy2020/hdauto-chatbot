@@ -4,10 +4,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Product, Replacement, Specification, ProductStatus, Inventory
 from app.models.schemas import ProductCreate, ReplacementCreate, SpecCreate
+from app.core.api_auth import require_admin_key
 import csv
 import io
 
-router = APIRouter(prefix="/api/products", tags=["products"])
+router = APIRouter(prefix="/api/products", tags=["products"], dependencies=[Depends(require_admin_key)])
 
 
 @router.post("/", summary="제품 등록")

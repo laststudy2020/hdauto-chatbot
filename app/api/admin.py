@@ -6,8 +6,9 @@ from app.db.database import get_db
 from app.db.models import Inventory, Product
 from app.services.inventory import check_low_stock
 from app.config import get_settings
+from app.core.api_auth import require_admin_key
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
+router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_key)])
 settings = get_settings()
 
 

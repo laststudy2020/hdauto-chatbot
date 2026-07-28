@@ -106,7 +106,9 @@ async def talktalk_webhook(
     # 서명 검증
     # - TALKTALK_SECRET 설정된 경우: 반드시 서명 일치해야 통과
     # - DEBUG=True이고 SECRET 미설정인 경우: 개발 환경으로 간주하고 스킵 (로그 경고)
-    # - 운영 환경(DEBUG=False)에서 SECRET 미설정: 403 반환
+    # - 운영 환경(DEBUG=False)에서 SECRET 미설정: 위조 요청을 막을 방법이 없으므로 403으로
+    #   차단(fail-closed) — 이전에는 경고 로그만 남기고 통과시켜 위조 웹훅이 그대로
+    #   처리됐다(코드리뷰 H3). 톡톡 채널을 실제로 쓰려면 .env에 TALKTALK_SECRET 설정 필요.
     secret = getattr(settings, "TALKTALK_SECRET", "")
     if secret:
         if not _verify_signature(body, secret, x_naver_bot_signature or ""):
@@ -114,7 +116,8 @@ async def talktalk_webhook(
     elif settings.DEBUG:
         logger.warning("TALKTALK_SECRET 미설정 — 개발 모드로 서명 검증 스킵")
     else:
-        logger.warning("TALKTALK_SECRET 미설정 상태로 운영 중 — 보안 취약, .env에 설정 권장")
+        logger.error("TALKTALK_SECRET 미설정 상태로 운영 중 — 웹훅 차단됨. .env에 설정 필요")
+        raise HTTPException(status_code=403, detail="서버 설정 오류: TALKTALK_SECRET 미설정")
 
     try:
         event = json.loads(body)
