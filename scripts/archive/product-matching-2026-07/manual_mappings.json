@@ -1,0 +1,16 @@
+{
+  "MR-J2S-40B": {
+    "origin_product_no": "여기에_정확한_원상품번호_입력",
+    "channel_product_no": "여기에_channel_product_no_입력",
+    "verified_by": "정현",
+    "verified_date": "2026-07-02",
+    "note": "PZ009U652 사양품과 오매칭되어 KNOWN_BAD_MATCHES 처리됨. 스마트스토어에서 직접 확인한 정확한 상품번호로 교체 필요."
+  },
+  "MR-J2S-700B": {
+    "origin_product_no": "여기에_정확한_원상품번호_입력",
+    "channel_product_no": "여기에_channel_product_no_입력",
+    "verified_by": "정현",
+    "verified_date": "2026-07-02",
+    "note": "RG171 보드 단품과 오매칭되어 KNOWN_BAD_MATCHES 처리됨."
+  }
+}
