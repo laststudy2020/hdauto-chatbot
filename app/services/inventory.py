@@ -6,7 +6,7 @@ from app.config import get_settings
 from app.services.web_search import search_and_answer
 from app.services.naver_commerce import search_stock_by_model_name, NaverCommerceError
 from app.services.servo_spec_search import get_servo_companion_note
-from app.services.admin_notify import notify_admin_kakao
+from app.services.admin_notify import notify_admins
 import httpx
 import logging
 
@@ -280,7 +280,7 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     # ────────────────────────────────────────────
     if stock["state"] == "out_of_stock":
         await _notify_admin(product_name)
-        await notify_admin_kakao(db, product, product_name, stock["quantity"], "out_of_stock")
+        await notify_admins(db, product, product_name, stock["quantity"], "out_of_stock")
         replacement_block = await _build_replacement_block()
 
         return (
@@ -298,7 +298,7 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     # ────────────────────────────────────────────
     if stock["state"] == "low_stock":
         stock_label = "✅ 재고 있음 (소진 임박 — 서두르시는 걸 권장드립니다)"
-        await notify_admin_kakao(db, product, product_name, stock["quantity"], "low_stock")
+        await notify_admins(db, product, product_name, stock["quantity"], "low_stock")
     else:
         stock_label = "✅ 재고 있음"
 

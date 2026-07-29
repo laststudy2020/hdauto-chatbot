@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.models import (
-    Product, StockAlert, PriceHistory, AlertChannel, KakaoToken,
+    Product, StockAlert, PriceHistory, AlertChannel,
     AlarmRecipient, PriceFilterKeyword,
 )
 
@@ -45,61 +45,34 @@ _FALLBACK_FILTER_KEYWORDS = ["해외", "구매대행", "해외배송", "직구"]
 _DEBOUNCE_SECONDS = 60 * 60
 _last_notified: dict[str, float] = {}
 
-# 카카오 토큰 갱신 실패 상태(서버 재시작 시 초기화). refresh_token이 만료/무효화되면
+# 수신자별 토큰/발송 실패 상태(서버 재시작 시 초기화). refresh_token이 만료/무효화되면
 # 로그만 남기고 이후 모든 알림이 계속 조용히 실패하던 것을, get_kakao_notify_health()로
 # 조회 가능하게 노출해 관리자가 재인증 필요 여부를 확인할 수 있게 한다(코드리뷰 H10).
-_kakao_last_failure: dict | None = None
+# 전역 단일 값이면 수신자가 여럿일 때 누구의 토큰이 끊겼는지 알 수 없어 재인증 대상을
+# 특정할 수 없으므로 수신자 id별로 기록한다.
+_kakao_failures: dict[int, dict] = {}
 
 
 def get_kakao_notify_health() -> dict:
     """카카오 알림 발송 가능 상태. /api/admin/kakao-status에서 노출."""
-    if _kakao_last_failure is None:
-        return {"status": "ok"}
-    return {"status": "failing", **_kakao_last_failure}
+    if not _kakao_failures:
+        return {"status": "ok", "recipients": []}
+    return {
+        "status": "failing",
+        "recipients": [
+            {"id": rid, **info} for rid, info in sorted(_kakao_failures.items())
+        ],
+    }
 
 
-# ───────────────────── 카카오 토큰 (DB 저장) ─────────────────────
+# ───────────────────── 카카오 토큰 (수신자별 DB 저장) ─────────────────────
 
-async def _load_kakao_token(db: AsyncSession) -> KakaoToken | None:
-    result = await db.execute(select(KakaoToken).where(KakaoToken.id == 1))
-    return result.scalars().first()
-
-
-async def _save_kakao_token(db: AsyncSession, token: dict):
-    existing = await _load_kakao_token(db)
-    now = datetime.utcnow()
-    if existing:
-        existing.access_token = token["access_token"]
-        existing.refresh_token = token.get("refresh_token", existing.refresh_token)
-        existing.expires_in = token["expires_in"]
-        existing.obtained_at = now
-    else:
-        db.add(KakaoToken(
-            id=1,
-            access_token=token["access_token"],
-            refresh_token=token["refresh_token"],
-            expires_in=token["expires_in"],
-            obtained_at=now,
-        ))
-    await db.commit()
-
-
-async def _get_valid_kakao_access_token(db: AsyncSession) -> str | None:
-    global _kakao_last_failure
-
-    row = await _load_kakao_token(db)
-    if not row:
-        logger.warning("[카카오알림] kakao_tokens 테이블에 토큰 없음 — 최초 인증 필요")
-        if _kakao_last_failure is None:
-            _kakao_last_failure = {
-                "reason": "토큰 없음 — 최초 인증 필요",
-                "since": datetime.utcnow().isoformat(),
-            }
-        return None
-
-    elapsed = (datetime.utcnow() - row.obtained_at).total_seconds()
-    if elapsed < row.expires_in - 60:
-        return row.access_token
+async def _get_valid_access_token(db: AsyncSession, recipient: AlarmRecipient) -> str | None:
+    """수신자 1명의 유효한 access_token. 만료되었으면 refresh_token으로 갱신한다."""
+    if recipient.access_token and recipient.token_obtained_at and recipient.token_expires_in:
+        elapsed = (datetime.utcnow() - recipient.token_obtained_at).total_seconds()
+        if elapsed < recipient.token_expires_in - 60:
+            return recipient.access_token
 
     async with httpx.AsyncClient(trust_env=False, timeout=10.0) as client:
         resp = await client.post(
@@ -108,30 +81,36 @@ async def _get_valid_kakao_access_token(db: AsyncSession) -> str | None:
                 "grant_type": "refresh_token",
                 "client_id": settings.KAKAO_REST_API_KEY,
                 "client_secret": settings.KAKAO_CLIENT_SECRET,
-                "refresh_token": row.refresh_token,
+                "refresh_token": recipient.channel_token,
             },
         )
+
     if not resp.is_success:
-        logger.error(f"[카카오알림] 토큰 갱신 실패: {resp.text}")
+        logger.error(f"[카카오알림] '{recipient.name}' 토큰 갱신 실패: {resp.text}")
         # refresh_token 만료/무효화 시 로그만 남기고 넘어가면 관리자가 알 방법이
-        # 없어 이후 모든 재고 알림이 계속 조용히 실패한다(코드리뷰 H10) — 실패
-        # 상태를 기억해 get_kakao_notify_health()로 조회 가능하게 한다.
-        if "since" not in (_kakao_last_failure or {}):
-            _kakao_last_failure = {
-                "reason": f"토큰 갱신 실패 (재인증 필요): {resp.text[:200]}",
-                "since": datetime.utcnow().isoformat(),
-            }
+        # 없어 이후 모든 재고 알림이 계속 조용히 실패한다(코드리뷰 H10).
+        _kakao_failures.setdefault(recipient.id, {
+            "name": recipient.name,
+            "reason": f"토큰 갱신 실패 (재인증 필요): {resp.text[:200]}",
+            "since": datetime.utcnow().isoformat(),
+        })
         return None
 
-    new_token = resp.json()
-    new_token.setdefault("refresh_token", row.refresh_token)
-    await _save_kakao_token(db, new_token)
-    _kakao_last_failure = None
-    return new_token["access_token"]
+    token = resp.json()
+    recipient.access_token = token["access_token"]
+    recipient.token_expires_in = token["expires_in"]
+    recipient.token_obtained_at = datetime.utcnow()
+    # refresh_token은 응답에 없을 수도 있다 (기존 값 유지)
+    if token.get("refresh_token"):
+        recipient.channel_token = token["refresh_token"]
+    await db.commit()
+
+    _kakao_failures.pop(recipient.id, None)
+    return recipient.access_token
 
 
-async def _send_kakao_text(db: AsyncSession, text: str) -> bool:
-    access_token = await _get_valid_kakao_access_token(db)
+async def _send_kakao_text(db: AsyncSession, recipient: AlarmRecipient, text: str) -> bool:
+    access_token = await _get_valid_access_token(db, recipient)
     if not access_token:
         return False
 
@@ -147,8 +126,15 @@ async def _send_kakao_text(db: AsyncSession, text: str) -> bool:
             data={"template_object": json.dumps(template_object, ensure_ascii=False)},
         )
     if not resp.is_success:
-        logger.error(f"[카카오알림] 발송 실패: {resp.text}")
+        logger.error(f"[카카오알림] '{recipient.name}' 발송 실패: {resp.text}")
+        _kakao_failures.setdefault(recipient.id, {
+            "name": recipient.name,
+            "reason": f"발송 실패: {resp.text[:200]}",
+            "since": datetime.utcnow().isoformat(),
+        })
         return False
+
+    _kakao_failures.pop(recipient.id, None)
     return True
 
 
@@ -248,22 +234,43 @@ def _build_message(
 
 # ───────────────────── 외부 호출 함수 ─────────────────────
 
-async def notify_admin_kakao(
+async def notify_admins(
     db: AsyncSession,
     product: Product | None,
     model_name: str,
     stock_qty: int,
     stock_state: str,  # "out_of_stock" | "low_stock" | "in_stock"
     force: bool = False,
-) -> bool:
-    """
-    재고 부족/품절 시 카카오 알림 + DB 기록(StockAlert, PriceHistory).
-    같은 모델명은 _DEBOUNCE_SECONDS 이내 재알림 스킵.
+) -> dict:
+    """활성 수신자 전원에게 재고 알림 + DB 기록(StockAlert, PriceHistory).
+
+    같은 모델명은 _DEBOUNCE_SECONDS 이내 재알림을 스킵한다. 디바운스는 수신자별이
+    아니라 모델별로 한 번 판정한다 — 같은 알림이 사람마다 다른 시각에 나가면
+    대조가 어렵다.
+
+    Returns: {"sent": 발송성공수, "total": 대상수신자수, "skipped": 사유 | None}
     """
     now = time.time()
     if not force and (now - _last_notified.get(model_name, 0)) < _DEBOUNCE_SECONDS:
         logger.info(f"[카카오알림] '{model_name}' 디바운스 스킵")
-        return False
+        return {"sent": 0, "total": 0, "skipped": "debounce"}
+
+    recipients = (await db.execute(
+        select(AlarmRecipient).where(
+            AlarmRecipient.is_active.is_(True),
+            AlarmRecipient.channel == "kakao",
+        ).order_by(AlarmRecipient.id)
+    )).scalars().all()
+
+    # 삭제/비활성화된 수신자의 실패 기록이 남으면 헬스 상태가 영구히 "failing"으로
+    # 보여 진짜 장애를 놓친다. 발송 대상에서 빠진 수신자의 기록은 지운다.
+    active_ids = {r.id for r in recipients}
+    for stale_id in [rid for rid in _kakao_failures if rid not in active_ids]:
+        _kakao_failures.pop(stale_id, None)
+
+    if not recipients:
+        logger.warning("[카카오알림] 활성 수신자가 없습니다 — 알림을 보내지 않습니다.")
+        return {"sent": 0, "total": 0, "skipped": "no_recipients"}
 
     our_price = product.our_price if product else None
 
@@ -277,14 +284,21 @@ async def notify_admin_kakao(
     message = _build_message(
         model_name, stock_qty, stock_state, our_price, competitors, excluded_count
     )
-    try:
-        sent = await _send_kakao_text(db, message)
-    except Exception as e:
-        # 카카오 발송 실패(네트워크/DNS 등)가 여기서 안 잡히면 예외가 get_inventory_status()를
-        # 거쳐 고객에게 갔어야 할 재고 응답 전체를 범용 오류 메시지로 대체해버린다(코드리뷰 H9).
-        # 관리자 알림은 부가 기능이므로 실패해도 고객 응답에는 영향 주지 않아야 한다.
-        logger.error(f"[카카오알림] 발송 중 예외: {e}")
-        sent = False
+    sent = 0
+    for recipient in recipients:
+        try:
+            if await _send_kakao_text(db, recipient, message):
+                sent += 1
+        except Exception as e:
+            # 카카오 발송 실패(네트워크/DNS 등)가 여기서 안 잡히면 예외가 get_inventory_status()를
+            # 거쳐 고객에게 갔어야 할 재고 응답 전체를 범용 오류 메시지로 대체해버린다(코드리뷰 H9).
+            # 또한 한 명의 실패가 나머지 수신자 발송까지 막아선 안 된다.
+            logger.error(f"[카카오알림] '{recipient.name}' 발송 중 예외: {e}")
+            _kakao_failures.setdefault(recipient.id, {
+                "name": recipient.name,
+                "reason": f"발송 중 예외: {e}",
+                "since": datetime.utcnow().isoformat(),
+            })
 
     # DB 기록 (product가 카탈로그에 있을 때만 — 없으면 FK 위반이라 스킵)
     if product:
@@ -317,4 +331,4 @@ async def notify_admin_kakao(
 
     if sent:
         _last_notified[model_name] = now
-    return sent
+    return {"sent": sent, "total": len(recipients), "skipped": None}

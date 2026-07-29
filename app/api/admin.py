@@ -96,7 +96,7 @@ async def update_stock(
 @router.get("/kakao-status", summary="카카오 재고알림 발송 가능 상태 확인")
 async def kakao_status():
     """refresh_token 만료/무효화로 알림이 조용히 실패 중인지 확인 (코드리뷰 H10).
-    status가 "failing"이면 kakao_test/kakao_auth_setup.py로 재인증 필요."""
+    status가 "failing"이면 recipients 목록의 수신자가 재인증 대상이다."""
     return get_kakao_notify_health()
 
 
