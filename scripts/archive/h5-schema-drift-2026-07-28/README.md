@@ -13,6 +13,10 @@
 로컬에만 존재).
 
 적용하지 않은 것(별도 판단 필요, 위험도/효과 대비 낮은 우선순위로 보류):
+
+> 2026-07-29 갱신: 아래 중 DATETIME 전환과 숫자/BOOLEAN 타입 보정은
+> `../type-drift-2026-07-29/`에서 적용 완료(알림 시각이 전부 NULL로 남는 실제 결함 확인).
+
 - `products.status` 등 ENUM 후보 컬럼을 TEXT로 유지 (현재 값은 `ACTIVE`/`DISCONTINUED`만
   존재해 안전하게 전환 가능하나, 이번 범위에서는 제외)
 - `created_at`/`updated_at`/`sent_at` 등 TEXT로 저장된 날짜 컬럼을 `DATETIME`으로 전환
