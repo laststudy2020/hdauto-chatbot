@@ -199,7 +199,11 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
         # 네이버 실시간 검색으로 한 번 더 확인 (스마트스토어에 실제로
         # 있는 상품인데 DB에만 안 등록된 경우를 놓치지 않기 위함)
         direct = await _check_naver_directly(model_name)
-        if direct and direct["quantity"] > 0:
+        if direct is None:
+            # 스마트스토어에서도 상품 자체를 못 찾음 → 재고 유무를 단정할 수 없다.
+            # "재고 없음"으로 단정하면 카탈로그에 없는 취급 모델의 주문을 놓친다.
+            stock = {"quantity": 0, "source": "none", "state": "unknown", "min_threshold": 0}
+        elif direct["quantity"] > 0:
             stock = {
                 "quantity": direct["quantity"],
                 "source": "naver",
@@ -208,7 +212,9 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
             }
             product_name = direct["matched_name"]
         else:
-            stock = {"quantity": 0, "source": "db", "state": "out_of_stock", "min_threshold": 0}
+            # 스마트스토어에 상품은 있는데 재고가 0 → 진짜 품절
+            stock = {"quantity": 0, "source": "naver", "state": "out_of_stock", "min_threshold": 0}
+            product_name = direct["matched_name"]
 
     # 3-1) 카테고리 + 사양 정보 (Product row가 있을 때만 표시 가능)
     product_info = _build_product_info(product) if product else ""
@@ -276,6 +282,22 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
         return ""
 
     # ────────────────────────────────────────────
+    # 3-5) 재고 확인 불가 (DB·스마트스토어 모두 미매칭)
+    # ────────────────────────────────────────────
+    if stock["state"] == "unknown":
+        # 재고 유무만 단정하지 않을 뿐, 대체품 안내 자체는 고객에게 유용하므로 유지한다.
+        # 관리자 알림은 보내지 않는다 — 매칭에 성공한 조회만 알림 대상이다.
+        replacement_block = await _build_replacement_block()
+        return (
+            f"{desc_note}"
+            f"🔎 '{model_name}'은(는) 정확한 재고 확인을 위해 확인 후 안내드리겠습니다.\n\n"
+            f"{companion_note}"
+            f"{replacement_block}\n\n"
+            f"📞 현대자동화로 연락주시면 바로 확인해 드리겠습니다.\n"
+            f"☎️ {COMPANY_PHONE}"
+        )
+
+    # ────────────────────────────────────────────
     # 4) 재고 없음
     # ────────────────────────────────────────────
     if stock["state"] == "out_of_stock":
@@ -298,9 +320,13 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     # ────────────────────────────────────────────
     if stock["state"] == "low_stock":
         stock_label = "✅ 재고 있음 (소진 임박 — 서두르시는 걸 권장드립니다)"
-        await notify_admins(db, product, product_name, stock["quantity"], "low_stock")
     else:
         stock_label = "✅ 재고 있음"
+
+    # 재고 조회 의도로 매칭에 성공한 경우 매번 알림. 재고가 충분한 문의도
+    # "어떤 상품을 고객이 찾고 있는가"라는 수요 신호로 쓴다. 발송량은
+    # notify_admins의 모델별 1시간 디바운스가 억제한다.
+    await notify_admins(db, product, product_name, stock["quantity"], stock["state"])
 
     # 단종이지만 재고는 남은 경우 → 대체품도 같이 안내
     replacement_block = ""
