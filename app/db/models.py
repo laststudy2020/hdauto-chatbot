@@ -184,10 +184,39 @@ class Reducer(Base):
     source_note = Column(String(200))    # 출처, 예: "apex감속기 06AB+Series.pdf p.71(spec)/p.72(dim)"
 
 class KakaoToken(Base):
+    """레거시 — 2026-07-29부터 알림 토큰은 AlarmRecipient가 관리한다.
+    롤백 대비로 테이블과 모델은 남기되 발송 경로에서는 더 이상 읽지 않는다."""
+
     __tablename__ = "kakao_tokens"
 
     id = Column(Integer, primary_key=True, default=1)
     access_token = Column(String(255), nullable=False)
     refresh_token = Column(String(255), nullable=False)
     expires_in = Column(Integer, nullable=False)
-    obtained_at = Column(DateTime, nullable=False)    
+    obtained_at = Column(DateTime, nullable=False)
+
+
+# ─── 9. 알림 수신자 (채널 일반형, 현재는 kakao만 사용) ───
+class AlarmRecipient(Base):
+    __tablename__ = "alarm_recipients"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(50), nullable=False)
+    channel = Column(String(20), nullable=False, default="kakao")
+    channel_token = Column(Text, nullable=False)   # 카카오: refresh_token / 훗날 slack: webhook URL
+    # 아래 3개는 카카오 채널만 쓰는 단기 캐시 (다른 채널에서는 NULL)
+    access_token = Column(Text)
+    token_expires_in = Column(Integer)
+    token_obtained_at = Column(DateTime)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+# ─── 10. 경쟁사 단가 제외 키워드 ───
+class PriceFilterKeyword(Base):
+    __tablename__ = "price_filter_keywords"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    keyword = Column(String(50), nullable=False, unique=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    note = Column(String(200))    
