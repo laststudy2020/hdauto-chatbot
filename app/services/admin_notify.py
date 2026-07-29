@@ -10,14 +10,17 @@ StockAlert / PriceHistory 테이블에 기록을 남기고, 카카오로 메시�
 import json
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import Product, StockAlert, PriceHistory, AlertChannel, KakaoToken
+from app.db.models import (
+    Product, StockAlert, PriceHistory, AlertChannel, KakaoToken,
+    AlarmRecipient, PriceFilterKeyword,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -27,6 +30,16 @@ KAPI_BASE = "https://kapi.kakao.com"
 NAVER_SHOP_URL = "https://openapi.naver.com/v1/search/shop.json"
 
 MY_MALL_KEYWORDS = ["현대자동화", "hdauto"]
+
+KST = timezone(timedelta(hours=9))
+
+# 필터 키워드 캐시 — 알림 1건마다 DB를 왕복할 이유가 없다.
+_FILTER_CACHE_TTL = 300
+_filter_cache: tuple[float, list[str]] | None = None
+
+# DB 조회 자체가 실패했을 때만 쓰는 폴백. 관리자가 키워드를 전부 비활성화한
+# 경우(빈 목록)는 "필터하지 말라"는 의도이므로 폴백하지 않는다.
+_FALLBACK_FILTER_KEYWORDS = ["해외", "구매대행", "해외배송", "직구"]
 
 # 재고 상태별 디바운스(같은 모델 반복 알림 방지). 서버 재시작 시 초기화.
 _DEBOUNCE_SECONDS = 60 * 60
@@ -141,7 +154,31 @@ async def _send_kakao_text(db: AsyncSession, text: str) -> bool:
 
 # ───────────────────── 네이버쇼핑 타사 가격 ─────────────────────
 
-async def _get_competitor_prices(model_name: str, limit: int = 3) -> list[dict]:
+async def _load_filter_keywords(db: AsyncSession) -> list[str]:
+    """활성 제외 키워드 목록 (5분 캐시)."""
+    global _filter_cache
+    now = time.time()
+    if _filter_cache and (now - _filter_cache[0]) < _FILTER_CACHE_TTL:
+        return _filter_cache[1]
+
+    try:
+        rows = (await db.execute(
+            select(PriceFilterKeyword.keyword).where(PriceFilterKeyword.is_active.is_(True))
+        )).scalars().all()
+        keywords = [k for k in rows if k]
+    except Exception as e:
+        logger.warning(f"[카카오알림] 필터 키워드 조회 실패, 기본값 사용: {e}")
+        keywords = list(_FALLBACK_FILTER_KEYWORDS)
+
+    _filter_cache = (now, keywords)
+    return keywords
+
+
+async def _get_competitor_prices(
+    model_name: str, keywords: list[str], limit: int = 3
+) -> tuple[list[dict], int]:
+    """(경쟁사 목록, 제외 건수). 자사몰 제외는 제외 건수에 세지 않는다 —
+    관리자가 알아야 할 것은 해외 상품이 몇 건 빠졌는지다."""
     async with httpx.AsyncClient(trust_env=False, timeout=10.0) as client:
         resp = await client.get(
             NAVER_SHOP_URL,
@@ -153,23 +190,34 @@ async def _get_competitor_prices(model_name: str, limit: int = 3) -> list[dict]:
         )
     if not resp.is_success:
         logger.warning(f"[카카오알림] 네이버쇼핑 검색 실패: {resp.text}")
-        return []
+        return [], 0
 
     items = resp.json().get("items", [])
     competitors = []
+    excluded = 0
     for item in items:
         mall = item["mallName"]
         if any(kw in mall for kw in MY_MALL_KEYWORDS):
             continue
         title = item["title"].replace("<b>", "").replace("</b>", "")
+        if any(kw in f"{title} {mall}" for kw in keywords):
+            excluded += 1
+            continue
         competitors.append({"title": title, "mall": mall, "price": int(item["lprice"])})
 
-    return sorted(competitors, key=lambda x: x["price"])[:limit]
+    return sorted(competitors, key=lambda x: x["price"])[:limit], excluded
 
 
 # ───────────────────── 메시지 조립 ─────────────────────
 
-def _build_message(model_name: str, stock_qty: int, stock_state: str, our_price: int | None, competitors: list[dict]) -> str:
+def _build_message(
+    model_name: str,
+    stock_qty: int,
+    stock_state: str,
+    our_price: int | None,
+    competitors: list[dict],
+    excluded_count: int = 0,
+) -> str:
     state_label = {"out_of_stock": "품절", "low_stock": "재고 부족", "in_stock": "재고 있음"}.get(stock_state, stock_state)
     lines = [
         "📦 재고 알림",
@@ -185,9 +233,16 @@ def _build_message(model_name: str, stock_qty: int, stock_state: str, our_price:
         lines.append("타사 가격 (참고용, 상품 일치 여부는 직접 확인 필요):")
         for c in competitors:
             lines.append(f"· [{c['mall']}] {c['price']:,}원 - {c['title'][:30]}")
+        if excluded_count:
+            lines.append(f"※ 해외 표기 상품 {excluded_count}건은 비교 대상에서 제외됨")
+    elif excluded_count:
+        lines.append(f"경쟁사 단가: 해외 표기 상품으로 제외됨 ({excluded_count}건)")
     else:
         lines.append("타사 가격 검색 결과 없음")
 
+    lines.append("─────────────")
+    # 서버(Render)가 UTC라 datetime.now()를 쓰면 관리자에게 9시간 어긋난 시각이 간다.
+    lines.append(f"조회 시각: {datetime.now(KST):%Y-%m-%d %H:%M}")
     return "\n".join(lines)
 
 
@@ -212,13 +267,16 @@ async def notify_admin_kakao(
 
     our_price = product.our_price if product else None
 
+    keywords = await _load_filter_keywords(db)
     try:
-        competitors = await _get_competitor_prices(model_name)
+        competitors, excluded_count = await _get_competitor_prices(model_name, keywords)
     except Exception as e:
         logger.warning(f"[카카오알림] 타사가격 조회 실패: {e}")
-        competitors = []
+        competitors, excluded_count = [], 0
 
-    message = _build_message(model_name, stock_qty, stock_state, our_price, competitors)
+    message = _build_message(
+        model_name, stock_qty, stock_state, our_price, competitors, excluded_count
+    )
     try:
         sent = await _send_kakao_text(db, message)
     except Exception as e:
