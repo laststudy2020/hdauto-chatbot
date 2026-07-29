@@ -88,9 +88,16 @@ class PriceFilterKeyword(Base):
 참조하지 않는다.
 
 프로덕션 테이블은 `pandas.to_sql`로 만들어진 이력이 있어 ORM 선언이 DDL에 반영되지 않는
-문제가 있었다(2026-07-28 H5, 2026-07-29 타입 드리프트 보정 참고). 신규 두 테이블은
-마이그레이션 스크립트에서 명시적 `CREATE TABLE`로 만들어 타입·기본값·제약을 처음부터
-정확히 넣는다.
+문제가 있었다(2026-07-28 H5, 2026-07-29 타입 드리프트 보정 참고).
+
+> **2026-07-29 정정:** 처음에는 신규 두 테이블을 마이그레이션 스크립트의 명시적
+> `CREATE TABLE`로 만들 계획이었으나, 불필요한 것으로 확인됐다. `init_db()`가 시작 시
+> `Base.metadata.create_all`을 호출하고 SQLAlchemy가 생성하는 DDL은 ORM 선언 그대로다.
+> `pandas.to_sql` 드리프트는 최초 이관 테이블에만 해당한다. 마이그레이션 스크립트는
+> `create_all(checkfirst=True)` 호출과 데이터 시드만 담당한다. 적용 후
+> `information_schema`로 확인한 결과 `name`/`channel`은 `varchar`, `is_active`는
+> `tinyint(1)`, `created_at`은 `datetime` + `DEFAULT current_timestamp()`,
+> `keyword`에 UNIQUE가 정상 생성됐다.
 
 ## 2. 발송 흐름 (`app/services/admin_notify.py`)
 
