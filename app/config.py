@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     KAKAO_REST_API_KEY: str = ""
     KAKAO_CLIENT_SECRET: str = ""
     KAKAO_REDIRECT_URI: str = "http://localhost:5000/oauth"
+    # 수신자 자가등록 콜백. KAKAO_REDIRECT_URI(레거시 kakao_test 스크립트용)와 별개로
+    # 두는 이유는 카카오 콘솔에 등록한 값과 글자 단위로 일치해야 하고, 하나를 고치면
+    # 다른 흐름이 조용히 깨지기 때문이다.
+    # 예: https://<배포도메인>/api/admin/recipients/callback
+    KAKAO_RECIPIENT_REDIRECT_URI: str = ""
 
     # 네이버쇼핑 가격비교 (미설정 시 기존 NAVER_CLIENT_ID로 폴백)
     NAVER_SHOPPING_CLIENT_ID: str = ""
