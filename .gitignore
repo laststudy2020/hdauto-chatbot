@@ -33,9 +33,12 @@ __pycache__/
 # subagent-driven-development scratch state
 .superpowers/
 
-# Kakao OAuth 토큰 (실제 자격증명)
-kakao_test/token.json
-kakao_test/__pycache__/
+# Kakao 수동 인증 스크립트 일체 (실제 자격증명)
+# token.json뿐 아니라 kakao_auth_setup.py / kakao_client.py에도 REST API 키와
+# 클라이언트 시크릿이 하드코딩돼 있다. 한 번 커밋하면 히스토리에서 지워지지 않으므로
+# 디렉터리째 제외한다. 수신자 추가는 /api/admin/recipients/connect로 대체됐고,
+# 이 스크립트는 로컬 폴백으로만 남긴다.
+kakao_test/
 
 # 대용량/임시 데이터 산출물
 products_raw.json
@@ -43,3 +46,6 @@ matching_analysis.json
 unmatched_diagnosis.json
 backups/
 docs/datasheets/**/_pages_tmp/
+# 데이터시트 원본 PDF (iS7 카탈로그 하나가 30MB — manuals/*.pdf와 같은 이유로 제외)
+docs/datasheets/**/*.pdf
+docs/datasheets/**/*.PDF
