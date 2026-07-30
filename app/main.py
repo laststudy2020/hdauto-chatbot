@@ -6,6 +6,7 @@ from app.db.seed import seed_if_empty
 from app.api.chatbot import router as chatbot_router
 from app.api.products import router as products_router
 from app.api.admin import router as admin_router
+from app.api.recipients import router as recipients_router
 from app.api.talktalk import router as talktalk_router
 from app.api.webchat import router as webchat_router
 from app.config import get_settings
@@ -47,6 +48,9 @@ app.add_middleware(
 app.include_router(chatbot_router)
 app.include_router(products_router)
 app.include_router(admin_router)
+# 수신자 자가등록은 admin_router와 달리 X-Admin-Key 헤더를 걸 수 없다 (카톡 링크 클릭 +
+# 카카오 리다이렉트로 들어오는 요청). 쿼리 key와 1회용 논스로 게이트한다.
+app.include_router(recipients_router)
 app.include_router(talktalk_router)
 app.include_router(webchat_router)
 
