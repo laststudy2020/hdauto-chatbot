@@ -49,3 +49,5 @@ docs/datasheets/**/_pages_tmp/
 # 데이터시트 원본 PDF (iS7 카탈로그 하나가 30MB — manuals/*.pdf와 같은 이유로 제외)
 docs/datasheets/**/*.pdf
 docs/datasheets/**/*.PDF
+# 작업 중 찍은 화면 캡처 (데이터시트 판독용 스크래치)
+docs/datasheets/**/화면 캡처*.png
