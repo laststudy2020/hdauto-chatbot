@@ -251,84 +251,99 @@ async def notify_admins(
     Returns: {"sent": 발송성공수, "total": 대상수신자수, "skipped": 사유 | None}
     """
     now = time.time()
-    if not force and (now - _last_notified.get(model_name, 0)) < _DEBOUNCE_SECONDS:
+    previous = _last_notified.get(model_name)
+    if not force and previous is not None and (now - previous) < _DEBOUNCE_SECONDS:
         logger.info(f"[카카오알림] '{model_name}' 디바운스 스킵")
         return {"sent": 0, "total": 0, "skipped": "debounce"}
 
-    recipients = (await db.execute(
-        select(AlarmRecipient).where(
-            AlarmRecipient.is_active.is_(True),
-            AlarmRecipient.channel == "kakao",
-        ).order_by(AlarmRecipient.id)
-    )).scalars().all()
-
-    # 삭제/비활성화된 수신자의 실패 기록이 남으면 헬스 상태가 영구히 "failing"으로
-    # 보여 진짜 장애를 놓친다. 발송 대상에서 빠진 수신자의 기록은 지운다.
-    active_ids = {r.id for r in recipients}
-    for stale_id in [rid for rid in _kakao_failures if rid not in active_ids]:
-        _kakao_failures.pop(stale_id, None)
-
-    if not recipients:
-        logger.warning("[카카오알림] 활성 수신자가 없습니다 — 알림을 보내지 않습니다.")
-        return {"sent": 0, "total": 0, "skipped": "no_recipients"}
-
-    our_price = product.our_price if product else None
-
-    keywords = await _load_filter_keywords(db)
-    try:
-        competitors, excluded_count = await _get_competitor_prices(model_name, keywords)
-    except Exception as e:
-        logger.warning(f"[카카오알림] 타사가격 조회 실패: {e}")
-        competitors, excluded_count = [], 0
-
-    message = _build_message(
-        model_name, stock_qty, stock_state, our_price, competitors, excluded_count
-    )
+    # 디바운스 슬롯을 발송 '전에' 선점한다. 위 검사와 실제 기록 사이에는 수신자 조회·
+    # 타사가격 조회·카카오 발송·커밋까지 await가 여러 번 있어서, 인기 모델을 여러 고객이
+    # 동시에 물어보면 두 요청이 모두 검사를 통과해 같은 알림이 중복 발송된다.
+    # 발송이 한 건도 성공하지 못하면 아래 finally에서 이전 값으로 되돌려, 실패한 시도가
+    # 한 시간 동안 재알림을 막지 않게 한다.
+    _last_notified[model_name] = now
     sent = 0
-    for recipient in recipients:
+
+    try:
+        recipients = (await db.execute(
+            select(AlarmRecipient).where(
+                AlarmRecipient.is_active.is_(True),
+                AlarmRecipient.channel == "kakao",
+            ).order_by(AlarmRecipient.id)
+        )).scalars().all()
+
+        # 삭제/비활성화된 수신자의 실패 기록이 남으면 헬스 상태가 영구히 "failing"으로
+        # 보여 진짜 장애를 놓친다. 발송 대상에서 빠진 수신자의 기록은 지운다.
+        active_ids = {r.id for r in recipients}
+        for stale_id in [rid for rid in _kakao_failures if rid not in active_ids]:
+            _kakao_failures.pop(stale_id, None)
+
+        if not recipients:
+            logger.warning("[카카오알림] 활성 수신자가 없습니다 — 알림을 보내지 않습니다.")
+            return {"sent": 0, "total": 0, "skipped": "no_recipients"}
+
+        our_price = product.our_price if product else None
+
+        keywords = await _load_filter_keywords(db)
         try:
-            if await _send_kakao_text(db, recipient, message):
-                sent += 1
+            competitors, excluded_count = await _get_competitor_prices(model_name, keywords)
         except Exception as e:
-            # 카카오 발송 실패(네트워크/DNS 등)가 여기서 안 잡히면 예외가 get_inventory_status()를
-            # 거쳐 고객에게 갔어야 할 재고 응답 전체를 범용 오류 메시지로 대체해버린다(코드리뷰 H9).
-            # 또한 한 명의 실패가 나머지 수신자 발송까지 막아선 안 된다.
-            logger.error(f"[카카오알림] '{recipient.name}' 발송 중 예외: {e}")
-            _kakao_failures.setdefault(recipient.id, {
-                "name": recipient.name,
-                "reason": f"발송 중 예외: {e}",
-                "since": datetime.utcnow().isoformat(),
-            })
+            logger.warning(f"[카카오알림] 타사가격 조회 실패: {e}")
+            competitors, excluded_count = [], 0
 
-    # DB 기록 (product가 카탈로그에 있을 때만 — 없으면 FK 위반이라 스킵)
-    if product:
-        try:
-            db.add(StockAlert(
-                product_id=product.id,
-                alert_type=stock_state,
-                channel=AlertChannel.KAKAO,
-                resolved=False,
-            ))
+        message = _build_message(
+            model_name, stock_qty, stock_state, our_price, competitors, excluded_count
+        )
+        for recipient in recipients:
+            try:
+                if await _send_kakao_text(db, recipient, message):
+                    sent += 1
+            except Exception as e:
+                # 카카오 발송 실패(네트워크/DNS 등)가 여기서 안 잡히면 예외가 get_inventory_status()를
+                # 거쳐 고객에게 갔어야 할 재고 응답 전체를 범용 오류 메시지로 대체해버린다(코드리뷰 H9).
+                # 또한 한 명의 실패가 나머지 수신자 발송까지 막아선 안 된다.
+                logger.error(f"[카카오알림] '{recipient.name}' 발송 중 예외: {e}")
+                _kakao_failures.setdefault(recipient.id, {
+                    "name": recipient.name,
+                    "reason": f"발송 중 예외: {e}",
+                    "since": datetime.utcnow().isoformat(),
+                })
 
-            if competitors and our_price:
-                prices = [c["price"] for c in competitors]
-                competitor_min = min(prices)
-                diff_percent = round((our_price - competitor_min) / our_price * 100, 1)
-                db.add(PriceHistory(
+        # DB 기록 (product가 카탈로그에 있을 때만 — 없으면 FK 위반이라 스킵)
+        if product:
+            try:
+                db.add(StockAlert(
                     product_id=product.id,
-                    our_price=our_price,
-                    competitor_min=competitor_min,
-                    competitor_avg=round(sum(prices) / len(prices)),
-                    competitor_max=max(prices),
-                    competitor_count=len(prices),
-                    diff_percent=diff_percent,
-                    needs_adjustment=diff_percent > settings.PRICE_DIFF_THRESHOLD,
+                    alert_type=stock_state,
+                    channel=AlertChannel.KAKAO,
+                    resolved=False,
                 ))
-            await db.commit()
-        except Exception as e:
-            logger.warning(f"[카카오알림] DB 기록 실패: {e}")
-            await db.rollback()
 
-    if sent:
-        _last_notified[model_name] = now
-    return {"sent": sent, "total": len(recipients), "skipped": None}
+                if competitors and our_price:
+                    prices = [c["price"] for c in competitors]
+                    competitor_min = min(prices)
+                    diff_percent = round((our_price - competitor_min) / our_price * 100, 1)
+                    db.add(PriceHistory(
+                        product_id=product.id,
+                        our_price=our_price,
+                        competitor_min=competitor_min,
+                        competitor_avg=round(sum(prices) / len(prices)),
+                        competitor_max=max(prices),
+                        competitor_count=len(prices),
+                        diff_percent=diff_percent,
+                        needs_adjustment=diff_percent > settings.PRICE_DIFF_THRESHOLD,
+                    ))
+                await db.commit()
+            except Exception as e:
+                logger.warning(f"[카카오알림] DB 기록 실패: {e}")
+                await db.rollback()
+
+        return {"sent": sent, "total": len(recipients), "skipped": None}
+    finally:
+        # 되돌리기는 우리가 찍은 값이 그대로 남아 있을 때만 한다. 그 사이 다른 호출이
+        # (force=True로) 슬롯을 다시 선점했다면 그쪽 기록을 지워선 안 된다.
+        if not sent and _last_notified.get(model_name) == now:
+            if previous is None:
+                _last_notified.pop(model_name, None)
+            else:
+                _last_notified[model_name] = previous
