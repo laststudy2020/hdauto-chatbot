@@ -70,31 +70,51 @@ IG5A_ALARM_CODES = [
     "ESt", "EtA", "Etb", "ntC", "nbr",
 ]
 _IG5A_CODE_MAP = {c.upper(): c for c in IG5A_ALARM_CODES}  # 매칭 결과 -> 원표기 복원
+
+# 타사(미쓰비시 등)는 Err-04처럼 코드에 숫자를 붙여 쓴다. 숫자가 붙어 있으면
+# iG5A의 'Err'로 가로채지 않고 아래 일반 정규식(ERR[\.\-]?\s*\d+)이 코드 전체를
+# 잡도록 양보한다 — 가로채면 "-04"가 유실돼 엉뚱한 코드로 조회된다.
+_NUMBERED_BY_OTHERS = {"ERR", "RERR"}
 _IG5A_ALT = "|".join(
-    sorted((re.escape(c.upper()) for c in IG5A_ALARM_CODES), key=len, reverse=True)
+    re.escape(code) + (r"(?![\.\-]?\s*\d)" if code in _NUMBERED_BY_OTHERS else "")
+    for code in sorted((c.upper() for c in IG5A_ALARM_CODES), key=len, reverse=True)
 )
 IG5A_ALARM_PATTERN = rf"(?<![A-Za-z])(?:{_IG5A_ALT})(?![A-Za-z])"
 
 # ─── 알람코드 패턴 (정규식, 미쓰비시 등 기타 제품군) ───
-ALARM_PATTERNS = [
-    r"AL[\.\-]?\s*[A-Z]?\d+",         # AL.E7, AL-17, AL.32
-    r"[Ee]rr[\.\-]?\s*\d+",           # Err-04, Err.12
+# 경계 조건이 없으면 모델명·영단어 내부를 알람코드로 오인한다. 실제로
+# "FR-E740-0.75K E.OC1"에서 모델명 조각인 E740이 코드로 잡혀 진짜 코드가
+# 유실됐고, "통신 PROTOCOL"의 OL, "TROUBLE"의 OU도 알람으로 오분류됐다.
+# 앞쪽에 하이픈까지 막는 이유: 모델명은 FR-E740처럼 하이픈으로 이어 붙는다.
+_ALARM_LEAD = r"(?<![A-Za-z0-9\-])"
+_ALARM_TAIL = r"(?![A-Za-z0-9])"
+
+# 아래 본문은 classify_intent가 msg_upper(전부 대문자)에 매칭하므로 반드시
+# 대문자로 적는다. 예전의 [Ee]rr / [Ff]ault는 소문자를 요구해 영원히 매칭되지
+# 않는 죽은 패턴이었다.
+_ALARM_BODIES = [
+    r"AL[\.\-]?\s*[A-Z]?\d+",          # AL.E7, AL-17, AL.32
+    r"E[\.\-][A-Z]{1,4}\d{0,2}",       # E.OC1, E.THT (미쓰비시 인버터)
+    r"ERR[\.\-]?\s*\d+",               # Err-04, Err.12
+    r"FAULT\s*\d+",                    # Fault 3
     r"E\d{2,4}",                       # E0001, E07
-    r"[Ff]ault\s*\d+",                # Fault 3
     r"OL[12]?",                        # OL, OL1, OL2 (과부하)
     r"OC[123]?",                       # OC, OC1 (과전류)
     r"OU[123]?",                       # OU (과전압)
     r"LU",                             # LU (저전압)
     r"OH[123]?",                       # OH (과열)
 ]
+ALARM_PATTERNS = [_ALARM_LEAD + body + _ALARM_TAIL for body in _ALARM_BODIES]
 
 # ─── 모델명 패턴 (FA 부품) ───
 MODEL_PATTERNS = [
-    r"[A-Z]{2,5}[\-]?\d{1,2}[A-Z][\-\d A-Z/]+",   # FX5U-32MT/ES, XBM-DR16S
-    r"SV[\-]?\d{3}[a-zA-Z]+[\-\d]+",               # SV015iG5A-4
+    # 공백을 문자군에서 뺐다. 포함돼 있으면 "SV015iG5A-4 OLt"처럼 모델명 뒤의
+    # 공백과 알람코드까지 삼켜 DB 조회가 실패한다.
+    r"[A-Z]{2,5}[\-]?\d{1,2}[A-Z][\-\dA-Z/]+",     # FX5U-32MT/ES, XBM-DR16S
+    r"SV[\-]?\d{3}[A-Za-z0-9]*(?:[\-]\d+)?",       # SV015iG5A-4
     r"MR[\-]?[A-Z]+\d+[A-Z]*[\-]?\d*[A-Z]*",       # MR-J4-70A
     r"[A-Z]\d{2}[A-Z]\d[\-\d\w]+",                  # E40H8-1024-3-T-24
-    r"[A-Z]{2,6}[\-]\w{2,20}",                      # FR-E740-0.75K
+    r"[A-Z]{2,6}[\-][\w\.\-/]{2,20}",               # FR-E740-0.75K
     r"L7S[A-Z]\d{3}[A-Z]?", 
     r"[A-Z]\d{2,3}[A-Z]{2,6}",                      # Q03UDVCPU, Q06UDVCPU, L02SCPU (미쓰비시 Q/L PLC)                        # L7SA001A (LS 서보드라이브, 대시 없음)
 ]
@@ -197,9 +217,16 @@ def classify_intent(message: str) -> IntentResult:
 
 
 def _extract_model(text: str) -> str | None:
-    """텍스트에서 FA 부품 모델명 추출"""
+    """텍스트에서 FA 부품 모델명 추출.
+
+    패턴 목록 순서대로 "먼저 걸리는 것"을 쓰면, 뒤쪽 패턴이 더 정확해도
+    앞 패턴이 문자열 뒷부분에서 잡은 조각에 밀린다. 실제로 "SV015iG5A-4"가
+    범용 패턴에 'iG5A-4'로 잘려 나갔다. 후보를 모두 모아 가장 긴 것을 쓴다.
+    """
+    best: str | None = None
     for pattern in MODEL_PATTERNS:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group().strip()
-    return None
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            candidate = match.group().strip().rstrip(".,")
+            if best is None or len(candidate) > len(best):
+                best = candidate
+    return best
