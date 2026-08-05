@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # 네이버 톡톡
     TALKTALK_AUTHORIZATION: str = ""
     TALKTALK_SECRET: str = ""
+    # 웹훅 URL 자체에 붙이는 토큰. 톡톡이 서명 헤더를 보내지 않는 경우에도
+    # 위조 요청을 막을 수 있도록 SECRET의 대안으로 둔다. 파트너센터에 등록하는
+    # URL을 .../api/talktalk/webhook?k=<이 값> 으로 적으면 된다.
+    TALKTALK_WEBHOOK_KEY: str = ""
     ADMIN_TALKTALK_USER_ID: str = ""  # 관리자 네이버 톡톡 user_id
     SLACK_WEBHOOK_URL: str = ""
 

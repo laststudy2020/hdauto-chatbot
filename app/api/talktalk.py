@@ -110,14 +110,26 @@ async def talktalk_webhook(
     #   차단(fail-closed) — 이전에는 경고 로그만 남기고 통과시켜 위조 웹훅이 그대로
     #   처리됐다(코드리뷰 H3). 톡톡 채널을 실제로 쓰려면 .env에 TALKTALK_SECRET 설정 필요.
     secret = getattr(settings, "TALKTALK_SECRET", "")
+    url_key = getattr(settings, "TALKTALK_WEBHOOK_KEY", "")
     if secret:
         if not _verify_signature(body, secret, x_naver_bot_signature or ""):
             raise HTTPException(status_code=403, detail="서명 검증 실패")
+    elif url_key:
+        # 톡톡이 서명 헤더를 보내지 않는 경우의 대안. 파트너센터에 등록한
+        # 웹훅 URL의 ?k= 값으로 게이트한다(recipients.connect와 같은 방식).
+        if not hmac.compare_digest(request.query_params.get("k", ""), url_key):
+            raise HTTPException(status_code=403, detail="웹훅 키 불일치")
     elif settings.DEBUG:
-        logger.warning("TALKTALK_SECRET 미설정 — 개발 모드로 서명 검증 스킵")
+        logger.warning("톡톡 웹훅 인증 미설정 — 개발 모드로 검증 스킵")
     else:
-        logger.error("TALKTALK_SECRET 미설정 상태로 운영 중 — 웹훅 차단됨. .env에 설정 필요")
-        raise HTTPException(status_code=403, detail="서버 설정 오류: TALKTALK_SECRET 미설정")
+        logger.error(
+            "톡톡 웹훅 인증 미설정 상태로 운영 중 — 웹훅 차단됨. "
+            "TALKTALK_SECRET 또는 TALKTALK_WEBHOOK_KEY 설정 필요"
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="서버 설정 오류: TALKTALK_SECRET/TALKTALK_WEBHOOK_KEY 미설정",
+        )
 
     try:
         event = json.loads(body)
