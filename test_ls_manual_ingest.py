@@ -91,19 +91,37 @@ def test_parser() -> None:
           m is not None and None not in (m.dimension_w, m.dimension_h, m.dimension_d),
           str(m))
 
-    # G100은 PDF 텍스트 객체의 좌표가 실제 표 행과 어긋난다. 파서가 그걸
-    # 감지해 스스로 버려야 한다 — 통과시키면 코드와 설명이 뒤섞여 들어간다.
-    g100 = parse_ls_manual(Path("manuals/LSLV-G100.pdf").read_bytes(), "G100")
-    check("G100은 정렬 불량으로 전량 폐기", len(g100.alarms) == 0,
-          f"{len(g100.alarms)}건이 통과함")
+    # G100은 PDF 텍스트 객체의 좌표가 실제 표 행과 어긋난다. OCR 없이 넣으면
+    # 코드와 설명이 뒤섞이므로 파서가 스스로 버려야 한다.
+    g_raw = parse_ls_manual(Path("manuals/LSLV-G100.pdf").read_bytes(), "G100")
+    check("G100은 OCR 없이는 전량 폐기", len(g_raw.alarms) == 0,
+          f"{len(g_raw.alarms)}건이 통과함")
     check("G100 폐기 사유가 note에 남음",
-          any("어긋남" in n for n in g100.notes), str(g100.notes))
+          any("어긋남" in n for n in g_raw.notes), str(g_raw.notes))
+
+    g100 = parse_ls_manual(Path("manuals/LSLV-G100.pdf").read_bytes(), "G100",
+                           use_ocr=True)
+    g_by_name = {a.name for a in g100.alarms}
+    check("G100 OCR로 고장 항목 복구", len(g100.alarms) >= 30, str(len(g100.alarms)))
+    for name in ("Over Current1", "Over Voltage", "Low Voltage2", "No Motor Trip"):
+        check(f"G100 명칭 {name}", name in g_by_name, str(sorted(g_by_name)[:6]))
+    # OCR은 표 숫자에서 소수점을 흘린다(2.5 → 25.0). 숫자 사양이 들어가면 안 된다.
+    check("G100 숫자 사양은 비어 있어야 함",
+          all(m.rated_current_a is None and m.weight_kg is None
+              and m.dimension_w is None for m in g100.models),
+          str([m for m in g100.models if m.weight_kg is not None][:2]))
+    gm = {m.model_name: m for m in g100.models}
+    check("G100 LSLV0022G100-2 용량 2.2kW",
+          "LSLV0022G100-2" in gm and gm["LSLV0022G100-2"].capacity_kw == 2.2,
+          str(gm.get("LSLV0022G100-2")))
 
 
 # ─────────────────────────── [2] DB 적재 ───────────────────────────
 async def test_db(db) -> None:
     section("[2] DB 적재 상태")
-    for series, min_alarms, min_models in (("LSLV-S100", 30, 25), ("LSLV-H100", 40, 30)):
+    for series, min_alarms, min_models in (("LSLV-S100", 30, 25),
+                                           ("LSLV-G100", 30, 12),
+                                           ("LSLV-H100", 40, 30)):
         n_alarm = (await db.execute(
             select(func.count()).select_from(AlarmCode)
             .where(AlarmCode.product_series == series)
@@ -221,6 +239,19 @@ async def test_specs(db) -> None:
     ctx = _captured[-1] if _captured else ""
     check("사양 컨텍스트에 치수가 실림",
           any(k in ctx for k in ("mm", "치수", "W", "100")), ctx[:150])
+
+    # 없는 항목을 빼기만 하면 LLM이 빈자리를 일반 지식으로 메운다. 실제로 치수·
+    # 중량이 NULL인 G100에 '150x180x85mm, 약 6kg, IP20'을 지어낸 적이 있다.
+    _captured.clear()
+    reply, found = await lookup_specs("LSLV0022G100-2", db)
+    check("LSLV0022G100-2 사양 조회 성공", found, reply[:80])
+    ctx = _captured[-1] if _captured else ""
+    check("미등록 항목이 컨텍스트에 명시됨", "미등록 항목(추정 금지)" in ctx,
+          ctx[:200])
+    check("미등록 목록에 외형/중량 포함",
+          "외형(WxHxD)" in ctx.split("미등록 항목(추정 금지):")[-1]
+          and "중량" in ctx.split("미등록 항목(추정 금지):")[-1],
+          ctx[-200:])
 
 
 async def main() -> None:

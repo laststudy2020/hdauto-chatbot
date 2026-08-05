@@ -24,8 +24,20 @@ TRIP_STATES = {"latch", "level", "hardware", "warning"}
 
 _CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9\-]{1,7}$")
 # LCD 표시 명칭은 대문자로 시작하는 두 글자 이상의 영문 표기다.
-_NAME_OK = re.compile(r"^[A-Z][A-Za-z0-9][A-Za-z0-9 .%/()+\-]*$")
+# 둘째 자리에 구분자가 오는 표기가 실제로 있다(E-Thermal, H/W-Diag).
+_NAME_OK = re.compile(r"^[A-Z][A-Za-z0-9/\-][A-Za-z0-9 .%/()+\-]*$")
 _MODEL_CODE_RE = re.compile(r"^\d{4}$")
+
+# 형명 4자리 → 적용 모터 용량(kW). LS 표기 규칙이며 S100/H100 정격표(기계 판독)와
+# G100 p.291/292(렌더링 후 육안 확인)에서 같은 값이 확인됐다. 0008만 0.8이 아닌
+# 0.75라 단순 나눗셈으로 대체할 수 없다.
+CAPACITY_BY_CODE = {
+    "0004": 0.4, "0008": 0.75, "0015": 1.5, "0022": 2.2, "0037": 3.7,
+    "0040": 4.0, "0055": 5.5, "0075": 7.5, "0110": 11.0, "0150": 15.0,
+    "0185": 18.5, "0220": 22.0,
+}
+# 형명 끝자리 = 전압 등급. 세 매뉴얼의 정격표 제목에서 확인.
+VOLTAGE_BY_SUFFIX = {"1": "단상 200V", "2": "3상 200V", "4": "3상 400V"}
 _NUM_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
 _HANGUL_RE = re.compile(r"[가-힣]")
 
@@ -156,7 +168,105 @@ def _fitz_pages(pdf_bytes: bytes) -> list[dict]:
 
 
 def _flat(words: list[dict]) -> str:
-    return _despace(" ".join(w["text"] for w in words))
+    ordered = sorted(words, key=lambda w: (round(w["top"] / 4), w["x0"]))
+    return _despace(" ".join(w["text"] for w in ordered))
+
+
+# ────────────────────────── OCR 보정 (G100 전용) ──────────────────────────
+# G100은 표의 영문/숫자가 텍스트 레이어에 있긴 한데 좌표가 실제 표 행과 전혀
+# 다른 자리에 찍혀 있다(명칭 'Latch'가 명칭 열 x에 오는 식). 한글 설명은 좌표가
+# 맞으므로, 영문·숫자만 렌더링 후 OCR로 다시 읽어 덮어쓴다.
+_TESSERACT_CANDIDATES = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+)
+_OCR_KEEP = re.compile(r"^[A-Za-z0-9()./%~\-]{1,}$")
+
+
+def _ocr_ready():
+    import pytesseract
+
+    if not pytesseract.pytesseract.tesseract_cmd or \
+            pytesseract.pytesseract.tesseract_cmd == "tesseract":
+        import os
+        for cand in _TESSERACT_CANDIDATES:
+            if os.path.exists(cand):
+                pytesseract.pytesseract.tesseract_cmd = cand
+                break
+    return pytesseract
+
+
+def _ocr_words(page, zoom: float = 4.0, min_conf: int = 40) -> list[dict]:
+    """페이지를 렌더링해 영문/숫자 단어를 PDF 좌표계로 돌려준다."""
+    import io as _io
+
+    import fitz
+    from PIL import Image
+
+    pytesseract = _ocr_ready()
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+    img = Image.open(_io.BytesIO(pix.tobytes("png")))
+    # psm 11(sparse)이 표에서 가장 잘 걷힌다. 같은 페이지에서 psm 6은 정격표
+    # 용량코드를 4/7, 고장표 명칭을 2/7밖에 못 읽었고 psm 11은 둘 다 7/7이었다.
+    data = pytesseract.image_to_data(img, lang="eng", config="--psm 11",
+                                     output_type=pytesseract.Output.DICT)
+    out = []
+    for i, txt in enumerate(data["text"]):
+        t = (txt or "").strip()
+        if not t or not _OCR_KEEP.match(t):
+            continue
+        try:
+            if int(data["conf"][i]) < min_conf:
+                continue
+        except (TypeError, ValueError):
+            continue
+        out.append({
+            "x0": data["left"][i] / zoom,
+            "x1": (data["left"][i] + data["width"][i]) / zoom,
+            "top": data["top"][i] / zoom,
+            "text": t,
+            "ocr": True,
+        })
+    return out
+
+
+def _overlaps_any(w: dict, others: list[dict], y_tol: float = 7.0) -> bool:
+    """한글 단어와 같은 자리에 겹치는가.
+
+    eng OCR은 한글을 'AHS', 'SS' 같은 라틴 잡음으로 읽어 낸다. 원래 한글이
+    제자리에 있는 칸은 텍스트 레이어 쪽이 맞으므로, 겹치는 OCR 결과는 버린다.
+    """
+    for o in others:
+        if abs(o["top"] - w["top"]) > y_tol:
+            continue
+        if w["x0"] < o["x1"] and o["x0"] < w["x1"]:
+            return True
+    return False
+
+
+def apply_ocr(pdf_bytes: bytes, pages: list[dict], targets: list[int],
+              zoom: float = 4.0) -> list[str]:
+    """targets 페이지의 영문·숫자를 OCR 결과로 갈아끼운다. 한글은 그대로 둔다."""
+    import fitz
+
+    notes: list[str] = []
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for pageno in targets:
+            try:
+                ocr = _ocr_words(doc[pageno - 1], zoom=zoom)
+            except Exception as e:
+                notes.append(f"p.{pageno}: OCR 실패 ({type(e).__name__}: {str(e)[:50]})")
+                continue
+            hangul = [w for w in pages[pageno - 1]["words"]
+                      if _HANGUL_RE.search(w["text"])]
+            kept = [w for w in ocr if not _overlaps_any(w, hangul)]
+            pages[pageno - 1]["words"] = hangul + kept
+            notes.append(f"p.{pageno}: OCR {len(kept)}단어(잡음 {len(ocr) - len(kept)} 버림)"
+                         f" + 한글 {len(hangul)}단어")
+    finally:
+        doc.close()
+    return notes
 
 
 def _bands(hlines: list[float]) -> list[tuple[float, float]]:
@@ -259,8 +369,13 @@ def _parse_trip_page(page: dict, pageno: int) -> list[ParsedAlarm]:
         cells: dict[str, list[str]] = {}
         for w in bw:
             r = roles.get(_region_of((w["x0"] + w["x1"]) / 2, vlines))
-            if r:
-                cells.setdefault(r, []).append(w["text"])
+            if not r:
+                continue
+            # 내용 칸은 한글이라 OCR(eng)이 'e2ow' 같은 잡음을 흘린다. 설명은
+            # 텍스트 레이어가 제자리에 있으니 그쪽만 쓴다.
+            if r == "desc" and w.get("ocr"):
+                continue
+            cells.setdefault(r, []).append(w["text"])
 
         code = " ".join(t for t in cells.get("code", []) if _CODE_RE.match(t))
         name = " ".join(t for t in cells.get("name", []) if not _HANGUL_RE.search(t))
@@ -465,9 +580,19 @@ def parse_ratings(pages: list[dict], series: str
             page_models[code] = m
 
         # 라벨이 값과 다른 줄에 있는 표가 많다('정격 전류(A)' 줄 아래 '중부하 2.5 ...').
+        # 괘선이 있으면 그걸로 행을 가른다 — OCR 보정을 한 페이지는 라벨(한글,
+        # 텍스트 레이어)과 값(숫자, OCR)의 y가 미세하게 어긋나 y묶음으로는
+        # 한 행에 안 모인다.
+        head_top = rows[head_i][0]
+        bands = [(a, b) for a, b in _bands(page["hlines"]) if b > head_top]
+        if len(bands) >= 3:
+            row_iter = [(a, _band_words(words, a, b)) for a, b in bands]
+        else:
+            row_iter = rows[head_i:]
+
         pending = ""
         done: set[str] = set()
-        for _t, ws in rows[head_i:]:
+        for _t, ws in row_iter:
             labels = _despace(" ".join(w["text"] for w in ws
                                        if not _NUM_RE.match(w["text"])))
             vals = _column_values(ws, columns, tol)
@@ -552,8 +677,14 @@ def parse_dimensions(pages: list[dict], series: str
                 best, best_d = None, 12.0
                 for w in band:
                     t = w["text"]
-                    # (2.68)처럼 괄호로 병기된 인치 값은 건너뛴다.
-                    if t.startswith("(") or not _NUM_RE.match(t):
+                    # (2.68)처럼 괄호로 병기된 인치 값은 건너뛴다. G100은 mm와
+                    # 인치가 '86.2(3.39)' 한 토큰으로 붙어 나와 앞쪽만 뗀다.
+                    if t.startswith("("):
+                        continue
+                    paren = re.match(r"^(-?\d+(?:\.\d+)?)\(", t)
+                    if paren:
+                        t = paren.group(1)
+                    elif not _NUM_RE.match(t):
                         continue
                     d = abs((w["x0"] + w["x1"]) / 2 - cx)
                     if d < best_d:
@@ -572,10 +703,33 @@ def parse_dimensions(pages: list[dict], series: str
 
 # ────────────────────────── 진입점 ──────────────────────────
 
-def parse_ls_manual(pdf_bytes: bytes, series: str) -> ParsedManual:
-    """series는 'S100'/'G100'/'H100'."""
+def _ocr_targets(pages: list[dict], series: str) -> list[int]:
+    """OCR을 걸 페이지(고장표/정격표/치수표)만 고른다 — 페이지당 수 초가 든다."""
+    out = []
+    for pageno, page in enumerate(pages, 1):
+        if not page["words"]:
+            continue
+        flat = _flat(page["words"])
+        if (_is_trip_page(flat)
+                or ("모델명" in flat and series in flat)
+                or all(k in flat for k in ("제품", "W1", "H1", "D1"))
+                or ("조치사항" in flat and "진단" in flat)):
+            out.append(pageno)
+    return out
+
+
+def parse_ls_manual(pdf_bytes: bytes, series: str, use_ocr: bool = False) -> ParsedManual:
+    """series는 'S100'/'G100'/'H100'.
+
+    use_ocr는 G100처럼 텍스트 레이어의 영문 좌표가 깨진 매뉴얼에만 쓴다.
+    """
     pages = _fitz_pages(pdf_bytes)
     result = ParsedManual(series=series)
+
+    if use_ocr:
+        targets = _ocr_targets(pages, series)
+        result.notes.append(f"OCR 대상 {len(targets)}페이지: {targets}")
+        result.notes += apply_ocr(pdf_bytes, pages, targets)
 
     result.alarms, n1 = parse_trips(pages)
     result.notes += n1
@@ -595,6 +749,25 @@ def parse_ls_manual(pdf_bytes: bytes, series: str) -> ParsedManual:
     for name, (w, h, d, pg) in dims.items():
         m = models.setdefault(name, ParsedModel(model_name=name))
         m.dimension_w, m.dimension_h, m.dimension_d, m.dim_page = w, h, d, pg
+
+    if use_ocr:
+        # OCR은 표의 숫자에서 소수점을 흘린다(p.291 정격전류 2.5 → 25.0 확인,
+        # 실측 21개 값 중 16개만 정확). 10배 오차가 조용히 들어가느니 숫자
+        # 사양은 통째로 버리고, 형명에서 확정되는 용량·전압만 남긴다.
+        dropped = sum(1 for m in models.values()
+                      if any(v is not None for v in
+                             (m.rated_current_a, m.weight_kg, m.dimension_w)))
+        for m in models.values():
+            m.rated_current_a = m.weight_kg = None
+            m.dimension_w = m.dimension_h = m.dimension_d = None
+            m.capacity_kw = CAPACITY_BY_CODE.get(m.model_name[4:8])
+            m.voltage_class = m.voltage_class or VOLTAGE_BY_SUFFIX.get(
+                m.model_name[-1]
+            )
+        result.notes.append(
+            f"OCR 모드: 숫자 사양 폐기({dropped}건, 소수점 유실 위험) — "
+            f"용량/전압만 형명에서 확정"
+        )
 
     result.models = sorted(models.values(), key=lambda m: m.model_name)
     return result

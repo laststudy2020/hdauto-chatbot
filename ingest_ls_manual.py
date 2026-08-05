@@ -28,9 +28,13 @@ from app.db.models import AlarmCode, Product, ProductStatus, Specification
 from app.services.ls_manual_parser import ParsedManual, parse_ls_manual
 
 MANUFACTURER = "LS"
+# (파일, 시리즈, OCR 필요 여부)
+# G100만 OCR을 켠다. 이 PDF는 표의 영문·숫자가 텍스트 레이어에 있긴 해도 좌표가
+# 실제 표 행과 전혀 다른 자리라, 렌더링 후 다시 읽어야 코드와 설명이 맞는다.
 DEFAULT_TARGETS = [
-    ("manuals/LSLV-S100.pdf", "S100"),
-    ("manuals/LSLV-H100.pdf", "H100"),
+    ("manuals/LSLV-S100.pdf", "S100", False),
+    ("manuals/LSLV-G100.pdf", "G100", True),
+    ("manuals/LSLV-H100.pdf", "H100", False),
 ]
 
 # 컬럼 상한(app/db/models.py). 넘치면 DB가 자르거나 에러를 내므로 여기서 맞춘다.
@@ -137,9 +141,10 @@ async def _upsert_alarm(db, a, series_label: str) -> str:
     return "생성" if created else "갱신"
 
 
-async def ingest(pdf_path: str, series: str, dry_run: bool) -> ParsedManual:
+async def ingest(pdf_path: str, series: str, dry_run: bool,
+                 use_ocr: bool = False) -> ParsedManual:
     series_label = f"LSLV-{series}"
-    parsed = parse_ls_manual(Path(pdf_path).read_bytes(), series)
+    parsed = parse_ls_manual(Path(pdf_path).read_bytes(), series, use_ocr=use_ocr)
     raw_count = len(parsed.alarms)
     parsed.alarms = _dedupe_alarms(parsed.alarms)
     if raw_count != len(parsed.alarms):
@@ -188,14 +193,14 @@ async def main() -> None:
     dry_run = "--dry-run" in sys.argv
 
     if len(args) >= 2:
-        targets = [(args[0], args[1])]
+        targets = [(args[0], args[1], args[1].upper() == "G100")]
     elif args:
         print("사용법: python ingest_ls_manual.py [PDF경로] [S100|G100|H100] [--dry-run]")
         return
     else:
         targets = DEFAULT_TARGETS
 
-    missing = [p for p, _s in targets if not os.path.exists(p)]
+    missing = [p for p, _s, _o in targets if not os.path.exists(p)]
     if missing:
         print(f"파일 없음: {missing}")
         return
@@ -203,8 +208,8 @@ async def main() -> None:
     if not dry_run:
         await init_db()
 
-    for pdf_path, series in targets:
-        await ingest(pdf_path, series, dry_run)
+    for pdf_path, series, use_ocr in targets:
+        await ingest(pdf_path, series, dry_run, use_ocr=use_ocr)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@
 
 ```
 python ingest_ls_manual.py --dry-run     # 결과만 출력
-python ingest_ls_manual.py               # S100 + H100 투입
+python ingest_ls_manual.py               # S100 + G100 + H100 투입
 ```
 
 범용 `upload_manual.py`(CLOVA 추출)를 이 세 매뉴얼에 쓰면 안 된다. 페이지 선별이
@@ -14,11 +14,26 @@ python ingest_ls_manual.py               # S100 + H100 투입
 (S100 p.429~433)가 한 장도 안 들어온다. `ingest_ls_manual.py`는
 `app/services/ls_manual_parser.py`로 좌표 기반 결정적 추출을 하며 LLM을 안 거친다.
 
-**G100은 투입 대상에서 빠져 있다.** PDF 텍스트 객체의 좌표가 실제 표 행과
-어긋나 있어(정격표 949자 중 좌표를 가진 건 228자, 명칭 열은 아예 비어 있음)
-코드와 설명의 짝을 확정할 수 없다. 파서가 이 상태를 감지하면 해당 페이지를
-통째로 버리고 note를 남긴다 — 억지로 통과시키면 다른 트립의 원인·조치가 섞여
-들어간다. G100을 넣으려면 OCR이 필요하다(현재 pytesseract/tesseract 미설치).
+### G100은 OCR이 필요하다
+
+G100 PDF는 표의 영문·숫자가 텍스트 레이어에 있긴 해도 좌표가 실제 표 행과
+전혀 다른 자리에 찍혀 있다(명칭 'Latch'가 명칭 열 x좌표에 오는 식). 그래서
+`use_ocr=True`로 페이지를 렌더링해 다시 읽는다. 설치:
+
+```
+winget install -e --id UB-Mannheim.TesseractOCR
+python -m pip install pytesseract
+```
+
+한국어 데이터(`kor`)는 필요 없다. **한글 설명은 텍스트 레이어 좌표가 맞으므로
+그대로 쓰고, OCR은 영문·숫자만 채운다.** eng OCR이 한글을 'AHS' 같은 라틴
+잡음으로 읽어 내므로, 한글 단어와 겹치는 OCR 결과는 버린다.
+
+**G100은 숫자 사양(정격전류·중량·치수)을 넣지 않는다.** OCR이 소수점을 흘려
+정격전류 2.5A를 25.0A로 읽는 게 확인됐고(p.291 실측 21개 값 중 16개만 정확),
+10배 오차가 조용히 들어가는 편이 값이 없는 것보다 나쁘다. 용량(kW)과 전압
+등급은 형명에서 확정되므로 그것만 채운다. 키패드 코드는 7세그먼트 그래픽이라
+OCR이 못 읽어(0/5) 알람코드로 LCD 명칭을 쓴다.
 
 ## 사용법
 
@@ -61,9 +76,9 @@ Remove-Item Env:DATABASE_URL     # 끝나면 원복 (안 지우면 이후 명령
 | Mitsubishi | FR-E840 | FR-E840 인버터 |
 | LS | SV-iG5A | SV008iG5A-4 |
 | LS | SV-iS7 | SV-iS7 인버터 |
-| LS | LSLV-S100 | LSLV0022S100-2 (적재됨: 알람 36 / 제품 32) |
-| LS | LSLV-G100 | LSLV0015G100-4 (미적재 — 위 참조) |
-| LS | LSLV-H100 | LSLV0022H100-2 (적재됨: 알람 49 / 제품 35) |
+| LS | LSLV-S100 | LSLV0022S100-2 (알람 36 / 제품 32 / 치수 O) |
+| LS | LSLV-G100 | LSLV0022G100-2 (알람 35 / 제품 13 / 치수 X — 위 참조) |
+| LS | LSLV-H100 | LSLV0022H100-2 (알람 49 / 제품 35 / 치수 O) |
 | LS | XGB | XBM-DR16S |
 | Autonics | E-Series | E40H8, E50S8 |
 | Proface | GP4000 | GP-4301T |
