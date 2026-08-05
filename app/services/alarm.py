@@ -49,8 +49,9 @@ async def diagnose_alarm(
             if alarms:
                 db_context = "\n".join([
                     f"[{a.alarm_code}] {a.alarm_name} — {a.manufacturer} {a.product_series}\n"
-                    f"원인: {a.cause}\n"
-                    f"해결: {a.solution}\n"
+                    f"원인: {a.cause or '(매뉴얼에 원인 설명 없음)'}\n"
+                    # 빈 칸으로 두면 LLM이 일반 지식으로 조치를 지어낸다.
+                    f"해결: {a.solution or '(매뉴얼 조치표에 항목 없음 — 지어내지 말 것)'}\n"
                     f"출처: {a.manual_filename or '매뉴얼'} p.{a.manual_page}"
                     for a in alarms
                 ])

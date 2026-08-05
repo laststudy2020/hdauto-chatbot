@@ -45,17 +45,26 @@ def _build_context(products: list) -> str:
         lines.append(f"제조사: {p.manufacturer} | 시리즈: {p.series} | 카테고리: {p.category}")
         if p.specs:
             s = p.specs
-            if s.dimension_w:
-                lines.append(f"외형(WxHxD): {s.dimension_w}x{s.dimension_h}x{s.dimension_d}mm")
-            if s.weight_kg: lines.append(f"중량: {s.weight_kg}kg")
-            if s.input_voltage: lines.append(f"전원: {s.input_voltage}")
-            if s.output_type: lines.append(f"출력방식: {s.output_type}")
-            if s.io_points: lines.append(f"입출력: {s.io_points}")
-            if s.comm_protocol: lines.append(f"통신: {s.comm_protocol}")
-            if s.operating_temp: lines.append(f"동작온도: {s.operating_temp}")
-            if s.protection_class: lines.append(f"보호등급: {s.protection_class}")
-            if s.rated_power: lines.append(f"정격출력: {s.rated_power}")
-            if s.drawing_url: lines.append(f"도면링크: {s.drawing_url}")
+            dims = (f"{s.dimension_w}x{s.dimension_h}x{s.dimension_d}mm"
+                    if s.dimension_w else None)
+            fields = [
+                ("외형(WxHxD)", dims),
+                ("중량", f"{s.weight_kg}kg" if s.weight_kg else None),
+                ("전원", s.input_voltage),
+                ("출력방식", s.output_type),
+                ("입출력", s.io_points),
+                ("통신", s.comm_protocol),
+                ("동작온도", s.operating_temp),
+                ("보호등급", s.protection_class),
+                ("정격출력", s.rated_power),
+                ("도면링크", s.drawing_url),
+            ]
+            lines += [f"{label}: {val}" for label, val in fields if val]
+            # 없는 항목을 빼기만 하면 LLM이 빈자리를 일반 지식으로 메운다.
+            # 실제로 치수·중량이 NULL인 제품에 '150x180x85mm, 약 6kg'을 지어냈다.
+            missing = [label for label, val in fields if not val]
+            if missing:
+                lines.append(f"미등록 항목(추정 금지): {', '.join(missing)}")
         else:
             lines.append("(스펙 미등록 - 판매자 문의)")
         lines.append("")
