@@ -8,15 +8,20 @@ settings = get_settings()
 # asyncmy(MariaDB)만 connect_timeout을 지원 — aiosqlite(로컬)는 이 kwarg를 모르므로
 # URL 스킴으로 분기. 이게 없으면 Tailscale 터널이 준비 안 된 상태에서 커넥션 시도가
 # 무한 대기할 수 있다(코드리뷰 H4).
-_connect_args = {"connect_timeout": 10} if not settings.DATABASE_URL.startswith("sqlite") else {}
+_IS_SQLITE = settings.DATABASE_URL.startswith("sqlite")
+_connect_args = {} if _IS_SQLITE else {"connect_timeout": 10}
+
+# aiosqlite는 NullPool로 붙어서 pool_size/max_overflow를 아예 받지 못한다(넘기면
+# create_engine이 TypeError를 낸다). 로컬/드라이런 모드가 import 단계에서 죽지
+# 않도록 connect_args와 같은 방식으로 분기한다.
+_pool_args = {} if _IS_SQLITE else {"pool_size": 5, "max_overflow": 2}
 
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     pool_recycle=280,      # 280초 이상 안 쓴 연결은 자동으로 폐기 후 재생성
-    pool_size=5,
-    max_overflow=2,
     connect_args=_connect_args,
+    **_pool_args,
 )
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

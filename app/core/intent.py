@@ -81,6 +81,56 @@ _IG5A_ALT = "|".join(
 )
 IG5A_ALARM_PATTERN = rf"(?<![A-Za-z])(?:{_IG5A_ALT})(?![A-Za-z])"
 
+# ─── LS 신형 인버터(S100/G100/H100) 키패드 표시 코드 ───
+# LSLV-S100 매뉴얼 p.429~433 고장/경보표에서 좌표 기반으로 추출한 실제 표기다
+# (ingest_ls_manual.py 참조). H100은 키패드에 명칭이 그대로 뜨므로 코드가 없다.
+LS_NEW_ALARM_CODES = [
+    "OLT", "ULT", "OCT", "OVT", "LVT", "LV2", "GFT", "ETH", "POT", "IPO",
+    "IOL", "NMT", "OHT", "OC2", "HWT", "NTC", "XBR", "SFA", "SFB", "LOR",
+    "ERRC", "OLW", "ULW", "IOLW", "LCW", "EFAN", "FANW", "DBW", "TRER",
+]
+# 아래는 일반 용어로도 흔히 쓰인다("PID 제어", "IoT 연동", "옵션(OPT)").
+# 시리즈명이 함께 나올 때만 알람으로 본다 — 아니면 평범한 질문이 알람으로 샌다.
+LS_AMBIGUOUS_ALARM_CODES = ["EXT", "BS", "PID", "OPT", "IOT", "HOLD", "PAR", "SLP"]
+LS_SERIES_PATTERN = r"(?:LSLV|[SGH]100)"
+
+
+def _code_alternation(codes: list[str]) -> str:
+    return "|".join(sorted((c.upper() for c in codes), key=len, reverse=True))
+
+
+LS_NEW_ALARM_PATTERN = (
+    rf"(?<![A-Za-z0-9])(?:{_code_alternation(LS_NEW_ALARM_CODES)})(?![A-Za-z0-9])"
+)
+LS_AMBIGUOUS_ALARM_PATTERN = (
+    rf"(?<![A-Za-z0-9])(?:{_code_alternation(LS_AMBIGUOUS_ALARM_CODES)})(?![A-Za-z0-9])"
+)
+
+# H100은 LCD 키패드라 짧은 코드가 없고 명칭이 그대로 표시된다. 고객은 화면에
+# 보이는 대로 "Ground Trip 떠요"라고 쓰므로 명칭도 알람으로 잡아야 한다.
+# (LSLV-H100 매뉴얼 p.489~503 고장표 기준)
+LS_LCD_TRIP_NAMES = [
+    "Over Load", "Under Load", "Over Current1", "Over Current2", "Over Voltage",
+    "Low Voltage2", "Low Voltage", "Ground Trip", "E-Thermal", "Out Phase Open",
+    "In Phase Open", "Inverter OLT", "No Motor Trip", "Over Heat", "External Trip",
+    "H/W-Diag", "NTC Open", "In Fan Trip", "Fan Trip", "Thermal Trip",
+    "Lost Key Pad", "Lost Keypad", "Fuse Open", "Damper Err", "MMC Interlock",
+    "Clean RPT Err", "Pipe Broken", "Broken Belt", "Lost Command", "IO Board Trip",
+    "TB Trip", "Para Write Trip", "Para Write Fail", "Option Trip", "INV Over Load",
+    "Fan Warning", "In Fan Warning", "Fan Ex Change", "Low Battery",
+    "Rs Tune Err", "Lsig Tune Err", "Safety A(B)Err", "Ext-Brake", "Pre-PID",
+]
+_LCD_ALT = "|".join(
+    re.escape(n).replace(r"\ ", r"\s+")
+    for n in sorted(LS_LCD_TRIP_NAMES, key=len, reverse=True)
+)
+LS_LCD_TRIP_PATTERN = rf"(?<![A-Za-z])(?:{_LCD_ALT})(?![A-Za-z])"
+
+# 명칭은 평범한 영어 조합("over voltage")이기도 해서, 시리즈명이나 고장 문맥이
+# 같이 있을 때만 알람으로 본다.
+ALARM_CONTEXT_WORDS = ("트립", "고장", "알람", "에러", "경보",
+                       "떴", "뜹", "떠요", "떠서", "발생", "trip", "Trip", "TRIP")
+
 # ─── 알람코드 패턴 (정규식, 미쓰비시 등 기타 제품군) ───
 # 경계 조건이 없으면 모델명·영단어 내부를 알람코드로 오인한다. 실제로
 # "FR-E740-0.75K E.OC1"에서 모델명 조각인 E740이 코드로 잡혀 진짜 코드가
@@ -112,6 +162,9 @@ MODEL_PATTERNS = [
     # 공백과 알람코드까지 삼켜 DB 조회가 실패한다.
     r"[A-Z]{2,5}[\-]?\d{1,2}[A-Z][\-\dA-Z/]+",     # FX5U-32MT/ES, XBM-DR16S
     r"SV[\-]?\d{3}[A-Za-z0-9]*(?:[\-]\d+)?",       # SV015iG5A-4
+    # LS 신형 인버터. 숫자가 알파벳 사이에 끼어 있어 위 패턴들에 걸리지 않는다
+    # — 없으면 "LSLV0022S100-2 치수 알려주세요"가 모델명 없이 안내문만 돌려준다.
+    r"LSLV\d{4}[SGHML]100(?:[\-]\d)?",             # LSLV0022S100-2
     r"MR[\-]?[A-Z]+\d+[A-Z]*[\-]?\d*[A-Z]*",       # MR-J4-70A
     r"[A-Z]\d{2}[A-Z]\d[\-\d\w]+",                  # E40H8-1024-3-T-24
     r"[A-Z]{2,6}[\-][\w\.\-/]{2,20}",               # FR-E740-0.75K
@@ -146,6 +199,21 @@ def classify_intent(message: str) -> IntentResult:
             intent=Intent.ALARM,
             alarm_code=alarm_code,
             model_name=model,
+            confidence=0.97,
+        )
+
+    # 0.5) LS 신형(S100/G100/H100) 키패드 코드 정확매칭 — 매뉴얼에서 추출한 목록
+    ls_match = re.search(LS_NEW_ALARM_PATTERN, msg_upper)
+    if not ls_match and re.search(LS_SERIES_PATTERN, msg_upper):
+        ls_match = re.search(LS_AMBIGUOUS_ALARM_PATTERN, msg_upper)
+    if not ls_match and (re.search(LS_SERIES_PATTERN, msg_upper)
+                         or any(k in msg for k in ALARM_CONTEXT_WORDS)):
+        ls_match = re.search(LS_LCD_TRIP_PATTERN, msg, re.IGNORECASE)
+    if ls_match:
+        return IntentResult(
+            intent=Intent.ALARM,
+            alarm_code=ls_match.group(),
+            model_name=_extract_model(msg),
             confidence=0.97,
         )
 

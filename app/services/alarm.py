@@ -4,6 +4,21 @@ from app.db.models import AlarmCode
 from app.core.clova import clova_client, SYSTEM_PROMPTS
 
 
+def _prefer_mentioned_series(alarms: list, hint: str) -> list:
+    """질문에 나온 시리즈의 행을 앞으로 당긴다.
+
+    제조사가 계열마다 같은 표기를 재사용한다(SV-iG5A의 OLt, LSLV-S100의 OLT).
+    코드만 보고 앞에서 5건을 자르면 엉뚱한 매뉴얼의 파라미터 번호를 답하게 된다.
+    """
+    up = hint.upper()
+
+    def rank(a) -> int:
+        key = (a.product_series or "").upper().rsplit("-", 1)[-1]
+        return 0 if len(key) >= 3 and key in up else 1
+
+    return sorted(alarms, key=rank)
+
+
 async def diagnose_alarm(
     alarm_code: str = None,
     model_name: str = None,
@@ -25,13 +40,15 @@ async def diagnose_alarm(
             conditions.append(AlarmCode.product_series.ilike(f"%{model_name}%"))
 
         if conditions:
-            stmt = select(AlarmCode).where(or_(*conditions)).limit(5)
+            stmt = select(AlarmCode).where(or_(*conditions)).limit(20)
             result = await db.execute(stmt)
-            alarms = result.scalars().all()
+            alarms = _prefer_mentioned_series(
+                result.scalars().all(), f"{user_message} {model_name or ''}"
+            )[:5]
 
             if alarms:
                 db_context = "\n".join([
-                    f"[{a.alarm_code}] {a.alarm_name}\n"
+                    f"[{a.alarm_code}] {a.alarm_name} — {a.manufacturer} {a.product_series}\n"
                     f"원인: {a.cause}\n"
                     f"해결: {a.solution}\n"
                     f"출처: {a.manual_filename or '매뉴얼'} p.{a.manual_page}"
