@@ -32,7 +32,7 @@ Settings load from `.env` via `pydantic-settings` with `extra="ignore"` (unknown
 - `NAVER_CLIENT_ID`/`NAVER_CLIENT_SECRET` — Naver **Search** OpenAPI, used for web-search fallback (`app/services/web_search.py`) and competitor pricing lookups.
 - `NAVER_COMMERCE_CLIENT_ID`/`NAVER_COMMERCE_CLIENT_SECRET` — Naver **Commerce** API (OAuth2 + bcrypt-signed), used for live stock (`app/services/naver_commerce.py`). Gated by `NAVER_COMMERCE_ENABLED`.
 
-`DATABASE_URL` determines runtime mode: a `sqlite+aiosqlite://` URL means local/dev; anything else (MariaDB via `asyncmy` in production) means Render mode. `app/main.py` checks this (`IS_LOCAL`) to decide whether to mount the manual-PDF-upload router at all — it's disabled in Render mode to save memory, so manuals are processed locally and the resulting DB rows/vector data are what actually ships.
+`RUNTIME_ENV` (`local`/`render`/`nas`) names where the app is running, and `ENABLE_MANUAL_UPLOAD` decides whether `app/main.py` mounts the manual-PDF-upload router — it stays off on Render to save memory, so manuals are processed locally and the resulting DB rows are what actually ships. Both fall back to being inferred from `DATABASE_URL` (`sqlite+aiosqlite://` → local with uploads on; anything else → render with uploads off), which is what the old `IS_LOCAL` flag did on its own. **Don't reintroduce that inference as the sole source of truth**: it only worked while "MariaDB" and "memory-constrained host" were the same thing, and the NAS deployment (MariaDB, plenty of memory) breaks that.
 
 ## Request flow / architecture
 
@@ -56,7 +56,11 @@ Settings load from `.env` via `pydantic-settings` with `extra="ignore"` (unknown
 
 **Competitor pricing excludes overseas listings** via keywords in the `price_filter_keywords` table (seeded with 해외/구매대행/해외배송/직구, 5-minute in-process cache). Keywords live in the DB so the list can change without a deploy. Deactivating every keyword means no filtering — the hardcoded fallback list applies only when the DB query itself fails. Note that used/accessory listings are deliberately *not* filtered, so `PriceHistory.needs_adjustment` can read as a false positive when a secondhand unit undercuts the new one.
 
-**Production DB connectivity runs over Tailscale.** `start.sh` boots `tailscaled` in userspace mode with a local SOCKS5 proxy, then `tailscale_proxy.py` forwards to the actual NAS-hosted MariaDB, before `uvicorn` starts. This only matters when debugging why the deployed app can/can't reach the DB — locally you just point `DATABASE_URL` at SQLite or a directly-reachable MariaDB.
+**There are two deployment targets, and the difference is entirely about how the app reaches the DB.** The MariaDB itself lives on a Synology NAS in the office either way.
+- **Render** (`start.sh`, `tailscale_proxy.py`): the app is off-site, so `start.sh` boots `tailscaled` in userspace mode with a local SOCKS5 proxy and `tailscale_proxy.py` forwards `127.0.0.1:13306` through the tailnet to the NAS before `uvicorn` starts. Neither file is used anywhere else — they exist solely to bridge that gap.
+- **NAS** (`Dockerfile`, `docker-compose.yml`, runbook in `deploy/nas/README.md`): the app runs on the same machine as the DB, so the whole tailnet detour disappears and `DATABASE_URL` points at `127.0.0.1:3306`. The compose file uses `network_mode: host` precisely so that address works whether MariaDB is a Synology package or its own container. Public HTTPS (needed because TalkTalk and Kakao call *in*) comes from Tailscale Funnel, not from a port forward.
+
+Locally you just point `DATABASE_URL` at SQLite or a directly-reachable MariaDB.
 
 ## Data model (`app/db/models.py`)
 

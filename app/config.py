@@ -15,6 +15,15 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./hdauto.db"
 
+    # 실행 위치 표시용(local | render | nas). 로그와 / 응답에만 쓴다.
+    # 비워두면 DATABASE_URL로 추정한다(sqlite면 local, 아니면 render).
+    RUNTIME_ENV: str = ""
+    # 매뉴얼 PDF 업로드 라우터. Render에서는 메모리가 모자라 껐고, 그 판정을
+    # "DATABASE_URL이 sqlite인가"로 대신해왔다. NAS처럼 DB가 MariaDB이면서도
+    # 메모리에 여유가 있는 환경이 생기면서 그 추정이 더는 성립하지 않아,
+    # 명시적으로 켤 수 있는 스위치를 둔다(sqlite 로컬은 지금처럼 자동으로 켜짐).
+    ENABLE_MANUAL_UPLOAD: bool = False
+
     # 네이버 검색 API (웹 검색용)
     NAVER_CLIENT_ID: str = ""
     NAVER_CLIENT_SECRET: str = ""

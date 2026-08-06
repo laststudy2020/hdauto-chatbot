@@ -1,0 +1,5 @@
+# 리눅스에서 실행되는 파일은 항상 LF로 체크아웃한다. Windows에서 작업하다
+# CRLF가 섞이면 컨테이너 안 sh가 "\r: not found"로 죽는다.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
