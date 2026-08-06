@@ -16,8 +16,12 @@ import gc
 logging.basicConfig(level=logging.INFO)
 settings = get_settings()
 
-# PDF 처리 라우터는 로컬 모드일 때만 활성화
-IS_LOCAL = settings.DATABASE_URL.startswith("sqlite")
+IS_SQLITE = settings.DATABASE_URL.startswith("sqlite")
+# DB 종류는 실행 위치의 대용물이었을 뿐이다(Render는 MariaDB, 로컬은 sqlite).
+# NAS는 MariaDB를 쓰면서 로컬처럼 여유가 있어 그 대응이 깨진다. 명시값 우선.
+RUNTIME_ENV = settings.RUNTIME_ENV or ("local" if IS_SQLITE else "render")
+# 매뉴얼 업로드는 메모리를 많이 먹어 Render에서는 꺼둔다.
+MANUAL_UPLOAD_ENABLED = IS_SQLITE or settings.ENABLE_MANUAL_UPLOAD
 
 
 @asynccontextmanager
@@ -54,13 +58,12 @@ app.include_router(recipients_router)
 app.include_router(talktalk_router)
 app.include_router(webchat_router)
 
-# 매뉴얼 업로드는 로컬에서만 활성화 (Render 메모리 절약)
-if IS_LOCAL:
+if MANUAL_UPLOAD_ENABLED:
     from app.api.manual import router as manual_router
     app.include_router(manual_router)
-    logging.info("매뉴얼 업로드 API 활성화 (로컬 모드)")
+    logging.info("매뉴얼 업로드 API 활성화 (%s)", RUNTIME_ENV)
 else:
-    logging.info("매뉴얼 업로드 API 비활성화 (Render 모드 - 로컬에서 처리)")
+    logging.info("매뉴얼 업로드 API 비활성화 (%s - 메모리 절약)", RUNTIME_ENV)
 
 
 @app.get("/", tags=["health"])
@@ -68,8 +71,8 @@ async def root():
     return {
         "app": settings.APP_NAME,
         "version": "1.5.0",
-        "mode": "local" if IS_LOCAL else "render",
-        "manual_upload": IS_LOCAL,
+        "mode": RUNTIME_ENV,
+        "manual_upload": MANUAL_UPLOAD_ENABLED,
         "chat_ui": "/chat",
         "docs": "/docs"
     }

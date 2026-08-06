@@ -1,0 +1,46 @@
+# 시놀로지 NAS 배포. 사용법은 deploy/nas/README.md 참고.
+#
+#   sudo docker compose up -d --build
+#   sudo docker compose logs -f
+
+services:
+  chatbot:
+    build: .
+    image: hdauto-chatbot:latest
+    container_name: hdauto-chatbot
+    restart: unless-stopped
+
+    # host 네트워크를 쓰는 이유:
+    #  1) MariaDB가 같은 NAS에 있다. 시놀로지 패키지로 깔렸든 별도 컨테이너로
+    #     떠 있든 호스트 3306에 노출돼 있어서, host 모드면 어느 쪽이든
+    #     127.0.0.1:3306 한 줄로 붙는다. bridge 모드면 경우마다 주소가 달라진다.
+    #  2) Tailscale Funnel이 호스트의 127.0.0.1:8000으로 넘겨주기 때문에
+    #     별도 포트 매핑이 필요 없다.
+    network_mode: host
+
+    env_file:
+      - .env
+
+    environment:
+      PORT: "8000"
+      # DATABASE_URL은 .env에서 온다. NAS에서는 tailnet을 타지 않으므로
+      # 127.0.0.1:3306을 가리켜야 한다(Render는 13306 포워더를 거쳤다).
+
+    healthcheck:
+      # 이미지에 curl이 없다(slim). 표준 라이브러리로 확인한다.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).status == 200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    # NAS 디스크가 로그로 차는 걸 막는다.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

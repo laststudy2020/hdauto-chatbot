@@ -1,0 +1,31 @@
+# 이미지에는 app/ 소스만 들어간다. 나머지는 전부 빌드 컨텍스트에서 제외해
+# 전송량과 이미지 크기를 줄이고, 비밀값이 레이어에 굳는 것을 막는다.
+
+# 비밀값 — .env는 런타임에 env_file로 주입한다. 절대 이미지에 넣지 않는다.
+.env
+.env.*
+!.env.example
+
+.git
+.gitignore
+.claude/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# 매뉴얼 PDF는 수백 MB다. 적재는 로컬에서 끝내고 결과 행만 DB에 들어간다.
+manuals/
+*.pdf
+*.db
+*.sqlite
+
+# 루트의 일회성 스크립트·검증 스크립트는 서비스 경로가 아니다.
+test_*.py
+migrate_*.py
+register_*.py
+kakao_test/
+docs/
+deploy/
+README.md
