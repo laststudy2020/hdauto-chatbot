@@ -23,6 +23,8 @@ class IntentResult:
     voltage_v: int | None = None     # 추출된 전압 (SPEC_SEARCH용)
     capacity_kw: float | None = None  # 추출된 용량 kW (SPEC_SEARCH용, 인버터)
     capacity_w: float | None = None   # 추출된 용량 W (SERVO_RECOMMEND용, 서보)
+    capacity_hp: float | None = None  # 사용자가 마력으로 물었을 때 원래 값 (안내문구용)
+    series_hint: str | None = None    # 질문에 언급된 시리즈 (SPEC_SEARCH 범위 한정용)
     confidence: float = 0.0
 
 
@@ -178,11 +180,58 @@ CAPACITY_PATTERN = r"(\d+(?:\.\d+)?)\s*[kK][wW]"
 SPEC_SEARCH_TRIGGERS = [
     "추천", "추천해", "추천해줘", "어떤 모델", "어떤 제품",
     "맞는 모델", "맞는 제품", "맞는 인버터", "골라", "찾아줘",
+    # 아래는 실사용 문장에서 빠져 있던 표현들. "380V 2.2kW 인버터 알려주세요"가
+    # 트리거 없음으로 SPECS에 떨어져 모델명을 되묻고 끝나던 것을 막는다.
+    "알려줘", "알려주세요", "알려 주세요", "알려주실", "뭐 쓰", "뭘 쓰",
+    "뭐가 맞", "무슨 모델", "모델명", "형명", "선정", "고르",
+]
+
+# ─── 마력(HP) → kW ───
+# 물리 환산(1HP=0.746kW)을 쓰면 5HP=3.73kW처럼 카탈로그에 없는 값이 나온다.
+# 인버터 형명은 IEC 표준 모터 용량 단계로 매겨지므로 표로 못박는다.
+# (LSLV-G100 매뉴얼 p.291~292 / LSLV-S100 p.450 '적용 모터 중부하' 행 기준)
+HP_TO_KW = {
+    0.5: 0.4, 1.0: 0.75, 2.0: 1.5, 3.0: 2.2, 5.0: 4.0, 7.5: 5.5,
+    10.0: 7.5, 15.0: 11.0, 20.0: 15.0, 25.0: 18.5, 30.0: 22.0,
+    40.0: 30.0, 50.0: 37.0, 60.0: 45.0, 75.0: 55.0, 100.0: 75.0,
+}
+# "3마력", "3HP", "3 hp", "3馬力". 'HP'는 모델명 조각일 수 있어 뒤에 영문자가
+# 이어지면 제외한다(예: HPX-3).
+HP_PATTERN = r"(\d+(?:\.\d+)?)\s*(?:마력|馬力|[Hh][Pp](?![A-Za-z]))"
+
+# ─── 질문에 언급된 시리즈 → DB Product.series ───
+# "g100 3마력 380V"처럼 시리즈를 지정하면 그 안에서만 찾아야 한다. 전압 등급이
+# 같은 다른 시리즈(S100/H100/iG5A)까지 같이 걸려 나오면 답이 흐려진다.
+SERIES_HINTS = [
+    (r"(?<![A-Za-z])G100", "LSLV-G100"),
+    (r"(?<![A-Za-z])S100", "LSLV-S100"),
+    (r"(?<![A-Za-z])H100", "LSLV-H100"),
+    (r"iG5A", "SV-iG5A"),
+    (r"iS7", "SV-iS7"),
 ]
 
 # ─── 서보 용량 추천(SERVO_RECOMMEND) 패턴 — 용량(W)만으로 검색 ───
 # kW 표기와 겹치지 않도록 앞에 k/K가 오면 제외, 뒤에 추가 영문자가 오면 제외
 WATT_PATTERN = r"(?<![kK])(\d+(?:\.\d+)?)\s*[wW](?![a-zA-Z])"
+
+
+def _hp_to_kw(hp: float) -> float | None:
+    """마력을 표준 용량 단계의 kW로 환산.
+
+    표에 없는 값은 반올림이 아니라 바로 위 단계로 올린다. 모터 마력을 밑도는
+    인버터를 권하면 과부하 트립이 나므로, 틀릴 거면 큰 쪽으로 틀려야 한다.
+    """
+    if hp in HP_TO_KW:
+        return HP_TO_KW[hp]
+    bigger = [h for h in HP_TO_KW if h > hp]
+    return HP_TO_KW[min(bigger)] if bigger else None
+
+
+def _extract_series_hint(text: str) -> str | None:
+    for pattern, series in SERIES_HINTS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return series
+    return None
 
 
 def classify_intent(message: str) -> IntentResult:
@@ -234,12 +283,26 @@ def classify_intent(message: str) -> IntentResult:
     # ("kW", "전압" 등은 SPECS 키워드와도 겹치므로, 일반 키워드 매칭보다 먼저 체크해서 가로챈다)
     voltage_match = re.search(VOLTAGE_PATTERN, msg)
     capacity_match = re.search(CAPACITY_PATTERN, msg, re.IGNORECASE)
+    hp_match = re.search(HP_PATTERN, msg)
     has_trigger = any(t in msg for t in SPEC_SEARCH_TRIGGERS)
-    if voltage_match and capacity_match and has_trigger:
+
+    # 용량은 kW 우선. 현장에서는 "3마력"으로 말하는 경우가 많아 마력도 받는다.
+    spec_kw = spec_hp = None
+    if capacity_match:
+        spec_kw = float(capacity_match.group(1))
+    elif hp_match:
+        spec_hp = float(hp_match.group(1))
+        spec_kw = _hp_to_kw(spec_hp)
+
+    # 모델명을 직접 댔다면 그 제품을 묻는 것이므로 역검색으로 가로채지 않는다.
+    if voltage_match and spec_kw is not None and has_trigger \
+            and _extract_model(msg) is None:
         return IntentResult(
             intent=Intent.SPEC_SEARCH,
             voltage_v=int(voltage_match.group(1)),
-            capacity_kw=float(capacity_match.group(1)),
+            capacity_kw=spec_kw,
+            capacity_hp=spec_hp,
+            series_hint=_extract_series_hint(msg),
             confidence=0.9,
         )
 
