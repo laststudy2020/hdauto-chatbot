@@ -149,7 +149,9 @@ async def _route(intent_result, message: str, db: AsyncSession) -> tuple[str, st
     # ─── 사양으로 모델 추천 (역검색, 인버터: 전압+kW) ───
     if intent == Intent.SPEC_SEARCH:
         db_reply = await find_by_spec(
-            intent_result.voltage_v, intent_result.capacity_kw, db
+            intent_result.voltage_v, intent_result.capacity_kw, db,
+            series_hint=intent_result.series_hint,
+            capacity_hp=intent_result.capacity_hp,
         )
         return db_reply, "db_spec_search"
 
