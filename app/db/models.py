@@ -61,9 +61,13 @@ class Replacement(Base):
     old_model_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
     new_model_id = Column(Integer, ForeignKey("products.id"), nullable=False)
     compatibility_notes = Column(Text)  # 호환성 설명
-    program_convertible = Column(Boolean, default=False)  # 프로그램 변환 가능 여부
-    terminal_compatible = Column(Boolean, default=False)  # 단자대 호환 여부
-    dimension_compatible = Column(Boolean, default=False)  # 외형 치수 호환
+    # NULL은 '미확인'이다. default=False였을 땐 값을 안 준 행이 전부 '비호환'으로
+    # 저장돼, 검증한 적 없는 비호환을 고객에게 단정하게 됐다. 사양 일치만 보고 자동
+    # 생성한 매핑처럼 호환을 확인하지 않은 경우가 실제로 있으므로 3상태로 둔다.
+    # (명시적으로 None을 넘겨도 Python측 default가 우선 적용되므로 default 자체를 뺀다.)
+    program_convertible = Column(Boolean)   # 프로그램 변환 가능 여부 (None=미확인)
+    terminal_compatible = Column(Boolean)   # 단자대 호환 여부 (None=미확인)
+    dimension_compatible = Column(Boolean)  # 외형 치수 호환 (None=미확인)
     source_url = Column(String(500))  # 근거 자료 URL
     created_at = Column(DateTime, server_default=func.now())
 
