@@ -3,7 +3,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Product, Replacement, Specification, ProductStatus
 from app.core.clova import clova_client, SYSTEM_PROMPTS
-from app.services.inventory import get_stock_state, COMPANY_PHONE
+from app.services.inventory import get_stock_state, COMPANY_PHONE, STORE_URL
 from app.services.servo_spec_search import get_servo_companion_note
 
 
@@ -97,6 +97,10 @@ async def find_replacement(model_name: str, db: AsyncSession) -> tuple[str, bool
     result2 = await db.execute(stmt2)
     replacements = result2.scalars().all()
 
+    # 단종이어도 보유 재고가 있으면 그걸 먼저 확인한다(아래 두 분기에서 같이 쓴다).
+    stock = await get_stock_state(product, db)
+    stock_note = _build_stock_note(product, stock)
+
     if not replacements:
         # 정식 대체품은 없어도 타사 참고 후보는 있을 수 있으므로 먼저 확인
         cross_brand_note = _build_cross_brand_note(product)
@@ -105,7 +109,7 @@ async def find_replacement(model_name: str, db: AsyncSession) -> tuple[str, bool
             f"'{product.model_name}'은(는) 단종 제품이지만\n"
             f"등록된 대체품 정보가 없습니다. 현대자동화로 문의해 주세요."
         )
-        return base + cross_brand_note + companion_note, True
+        return base + stock_note + cross_brand_note + companion_note, True
 
     # 4) RAG 컨텍스트 구성 후 HyperCLOVA 답변 생성
     context = _build_context(product, replacements)
@@ -118,12 +122,50 @@ async def find_replacement(model_name: str, db: AsyncSession) -> tuple[str, bool
         temperature=0.2,
     )
 
-    # 5) 타사 참고 후보 — 검증 안 된 참고정보이므로 AI 패러프레이즈 없이
-    #    고정 문구로 별도 섹션에 덧붙인다 (확정 대체품과 절대 혼동되지 않도록).
+    # 5) 보유 재고와 타사 참고 후보 — 검증 안 된 참고정보이거나 수량처럼 틀리면
+    #    안 되는 값이므로 AI 패러프레이즈 없이 고정 문구로 별도 섹션에 덧붙인다
+    #    (확정 대체품과 절대 혼동되지 않도록).
+    response += stock_note
     response += _build_cross_brand_note(product)
     response += await get_servo_companion_note(product, model_name, db)
 
     return response, True
+
+
+def _build_stock_note(product: Product, stock: dict) -> str:
+    """단종품이라도 우리가 실제로 갖고 파는 재고를 알린다 (없으면 빈 문자열).
+
+    단종 표기를 켜면 대체품 분기가 열리는 대신 "단종입니다, 후속은 X입니다"로 끝나
+    정작 우리가 보유한 재고를 안 팔게 된다. iG5A 22건이 스마트스토어에 올라가 있는
+    상황이라 실제 매출이 걸린 문제다.
+
+    '중고'라고 말할지는 데이터로만 정한다. "단종인데 재고가 있으면 중고"라고 코드가
+    단정하면 신품 데드스톡을 중고로 잘못 안내한다 — 가격·품질 기대가 달라지는 값이라
+    조용히 틀리면 안 된다. extra_specs.stock_condition이 'used'일 때만 중고라 밝히고,
+    없으면 신품/중고를 주장하지 않는 중립 표현으로 둔다.
+    """
+    if stock.get("state") not in ("in_stock", "low_stock"):
+        return ""
+    quantity = stock.get("quantity") or 0
+    if quantity <= 0:
+        return ""
+
+    condition = ""
+    if product.specs and product.specs.extra_specs:
+        condition = product.specs.extra_specs.get("stock_condition") or ""
+
+    label = "중고 재고" if condition == "used" else "재고"
+    lines = [
+        "\n\n---",
+        f"📦 다만 당사에 **{product.model_name} {label} {quantity}개**가 있어 "
+        f"바로 구매 가능합니다.",
+    ]
+    if condition == "used":
+        lines.append("(신품은 단종됐고, 보유분은 중고입니다. 상태는 문의해 주세요.)")
+    if stock.get("state") == "low_stock":
+        lines.append("소진 임박 — 서두르시는 걸 권장드립니다.")
+    lines.append(f"🛒 {STORE_URL}")
+    return "\n".join(lines)
 
 
 def _build_cross_brand_note(product: Product) -> str:
@@ -147,6 +189,13 @@ def _build_cross_brand_note(product: Product) -> str:
     return "\n".join(lines)
 
 
+def _flag(value: bool | None, yes: str, no: str) -> str:
+    """3상태 렌더링 — None은 검증되지 않았다는 뜻이므로 '미확인'."""
+    if value is None:
+        return "미확인"
+    return yes if value else no
+
+
 def _build_context(product: Product, replacements: list) -> str:
     lines = [
         f"[단종 제품] {product.model_name}",
@@ -165,9 +214,12 @@ def _build_context(product: Product, replacements: list) -> str:
             if s.io_points: lines.append(f"입출력: {s.io_points}")
             if s.dimension_w:
                 lines.append(f"외형: {s.dimension_w}x{s.dimension_h}x{s.dimension_d}mm")
-        lines.append(f"단자대 호환: {'O' if rep.terminal_compatible else 'X'}")
-        lines.append(f"프로그램 변환: {'가능' if rep.program_convertible else '필요'}")
-        lines.append(f"외형 호환: {'O' if rep.dimension_compatible else 'X'}")
+        # NULL은 '미확인'이지 '비호환'이 아니다. 사양 일치만 보고 자동 생성한 매핑은
+        # 호환 플래그가 비어 있는데, 이걸 X로 찍으면 검증한 적 없는 비호환을 고객에게
+        # 단정하게 된다(반대로 O로 찍으면 없는 호환을 지어낸다).
+        lines.append(f"단자대 호환: {_flag(rep.terminal_compatible, 'O', 'X')}")
+        lines.append(f"프로그램 변환: {_flag(rep.program_convertible, '가능', '필요')}")
+        lines.append(f"외형 호환: {_flag(rep.dimension_compatible, 'O', 'X')}")
         if rep.compatibility_notes:
             lines.append(f"비고: {rep.compatibility_notes}")
         lines.append("")
