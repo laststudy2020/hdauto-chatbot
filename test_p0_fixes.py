@@ -245,6 +245,40 @@ async def test_inventory_used(db):
               "중고" not in r2, r2[:160])
 
 
+# ────────────────────────────────────────────────────────────
+# [6] 재고 응답에 생성된 대체품이 섞이지 않는가
+# ────────────────────────────────────────────────────────────
+async def test_inventory_no_web_replacement(db):
+    print("\n[6] 재고 응답 — 웹/LLM 생성 대체품 미혼입")
+
+    check("inventory가 search_and_answer를 import하지 않음",
+          not hasattr(inv_svc, "search_and_answer"))
+
+    # 단종 + DB 대체품이 등록된 제품으로 확인한다
+    prods = (await db.execute(
+        select(Product).options(selectinload(Product.specs),
+                                selectinload(Product.inventory))
+    )).scalars().all()
+    target = next((p for p in prods
+                   if p.status.value == "discontinued"
+                   and p.model_name == "SV015iG5A-4"), None)
+    if not target:
+        target = next((p for p in prods if p.status.value == "discontinued"), None)
+    if not target:
+        print("  SKIP  단종 제품이 없음")
+        return
+
+    print(f"  대상: {target.model_name}")
+    reply = await inv_svc.get_inventory_status(target.model_name, db)
+    check("'유사 사양 제품 안내' 섹션이 사라짐", "유사 사양 제품 안내" not in reply,
+          reply[:200])
+    check("DB 대체품 안내는 유지", "추천 대체 모델" in reply, reply[:200])
+    # 프로덕션에서 실제로 나왔던 환각 형명
+    check("환각 형명(iS7/S130IS7)이 안 나옴",
+          "IS7" not in reply.upper(),
+          [l for l in reply.splitlines() if "IS7" in l.upper()][:3])
+
+
 async def main():
     async with async_session() as db:
         test_exact_model_note()
@@ -252,6 +286,7 @@ async def main():
         await test_diagnose_alarm(db)
         await test_replacement_exact_name(db)
         await test_inventory_used(db)
+        await test_inventory_no_web_replacement(db)
 
     print(f"\n{'=' * 60}\n결과: {passed} PASS / {failed} FAIL\n{'=' * 60}")
     return 1 if failed else 0

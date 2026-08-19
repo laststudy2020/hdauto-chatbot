@@ -3,7 +3,6 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Inventory, Product, Replacement, ProductStatus
 from app.config import get_settings
-from app.services.web_search import search_and_answer
 from app.services.naver_commerce import search_stock_by_model_name, NaverCommerceError
 from app.services.servo_spec_search import get_servo_companion_note
 from app.services.admin_notify import notify_admins
@@ -273,25 +272,21 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
 
     # ── 대체품 안내 블록 (단종이거나 재고 없을 때) ──
     async def _build_replacement_block() -> str:
-        """DB 대체품 우선, 없으면 웹검색으로 타사 비슷한 사양 제품 포함."""
-        lines = []
-        if db_replacements:
-            lines.append(f"🔄 추천 대체 모델: {', '.join(db_replacements)}")
+        """DB에 등록된 대체품만 안내한다.
 
-        # 웹검색으로 타사 비슷한 사양 제품 추가 안내
-        try:
-            web_reply, _ = await search_and_answer(
-                query=f"{model_name} 단종 대체품 동급 사양 FA 자동화 부품",
-                intent="replacement"
-            )
-            if web_reply and len(web_reply) > 20:
-                lines.append(f"🌐 유사 사양 제품 안내 (참고용):\n{web_reply[:400]}")
-        except Exception as e:
-            logger.warning(f"대체품 웹 검색 실패: {e}")
+        예전엔 여기서 웹검색(search_and_answer) 결과를 '유사 사양 제품 안내'로
+        덧붙였다. DB 답이 이미 있어도 무조건 붙는 구조라, 한 응답 안에 큐레이션된
+        정답과 생성된 오답이 나란히 나갔다. 2026-08-19 프로덕션 실측: SV015iG5A-4
+        재고 응답이 정답 'LSLV0015G100-4' 바로 아래에 실재하지 않는 형명
+        'S130IS7시리즈'를 추천했고, 그쪽이 더 길고 구체적이라 고객은 그걸 읽는다.
 
-        if lines:
-            return "\n\n" + "\n\n".join(lines) + REPLACEMENT_CAUTION
-        return ""
+        chatbot._route의 폴백 체인에는 웹/LLM이 DB 응답을 덮어쓰지 못하게 하는
+        가드가 있지만, 이 호출은 폴백이 아니라 상시 추가여서 가드를 비켜갔다.
+        대체품을 더 넓게 찾아야 하는 질문이면 replacement 의도로 라우팅되는 게 맞다.
+        """
+        if not db_replacements:
+            return ""
+        return f"\n\n🔄 추천 대체 모델: {', '.join(db_replacements)}" + REPLACEMENT_CAUTION
 
     # ────────────────────────────────────────────
     # 3-5) 재고 확인 불가 (DB·스마트스토어 모두 미매칭)
