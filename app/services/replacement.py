@@ -1,3 +1,5 @@
+import re
+
 from sqlalchemy import select, or_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -122,14 +124,50 @@ async def find_replacement(model_name: str, db: AsyncSession) -> tuple[str, bool
         temperature=0.2,
     )
 
-    # 5) 보유 재고와 타사 참고 후보 — 검증 안 된 참고정보이거나 수량처럼 틀리면
-    #    안 되는 값이므로 AI 패러프레이즈 없이 고정 문구로 별도 섹션에 덧붙인다
+    # 5) 정확한 형명·보유 재고·타사 참고 후보 — 틀리면 안 되는 값이거나 검증 안 된
+    #    참고정보이므로 AI 패러프레이즈 없이 고정 문구로 별도 섹션에 덧붙인다
     #    (확정 대체품과 절대 혼동되지 않도록).
+    response += _build_exact_model_note(replacements)
     response += stock_note
     response += _build_cross_brand_note(product)
     response += await get_servo_companion_note(product, model_name, db)
 
     return response, True
+
+
+_LS_INVERTER_SUFFIX = re.compile(r"^(?:LSLV|SV).*-([124])$", re.IGNORECASE)
+_SUFFIX_MEANING = {"1": "단상 200V", "2": "3상 200V", "4": "3상 400V"}
+
+
+def _build_exact_model_note(replacements: list) -> str:
+    """확정 대체품의 형명을 LLM 밖에서 고정 문구로 다시 못박는다.
+
+    CLOVA가 형명을 시리즈명으로 뭉개는 일이 비결정적으로 발생한다(프로덕션 실측:
+    같은 프롬프트 구조인데 'LSLV0022G100-4'는 유지되고 'LSLV0004S100-1'은
+    'LSLV-S100 시리즈'로 소실). 형명 끝자리는 전압·상 구분이라, 시리즈명만 들은
+    고객이 단상 전원에 3상 인버터를 사는 사고로 이어진다. 재고 수량·타사 후보와
+    같은 부류 — 틀리면 안 되는 값은 생성에 맡기지 않는다.
+    """
+    models = [r.new_product.model_name for r in replacements if r.new_product]
+    if not models:
+        return ""
+
+    lines = ["\n\n---", "✅ **정확한 대체 형명**: " + ", ".join(models)]
+
+    # 접미사 의미는 LS 인버터 형명일 때만 밝힌다. 다른 제품군('MR-J4-10A1' 등)은
+    # 끝자리 규칙이 달라서 같은 설명을 붙이면 없는 규칙을 지어내는 셈이 된다.
+    suffixes = {
+        m.group(1) for name in models if (m := _LS_INVERTER_SUFFIX.match(name))
+    }
+    if suffixes:
+        meanings = " / ".join(
+            f"-{s} {_SUFFIX_MEANING[s]}" for s in sorted(suffixes)
+        )
+        lines.append(
+            f"형명 끝자리는 전압·상 구분입니다({meanings}). "
+            f"주문 시 위 형명 그대로 확인해 주세요."
+        )
+    return "\n".join(lines)
 
 
 def _build_stock_note(product: Product, stock: dict) -> str:

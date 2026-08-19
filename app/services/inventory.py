@@ -40,6 +40,18 @@ CATEGORY_MAP = {
 }
 
 
+def _is_used_stock(product: Product | None) -> bool:
+    """보유분이 중고라고 데이터가 말하는가.
+
+    "단종인데 재고가 있으니 중고"라고 추론하지 않는다 — 신품 데드스톡을 중고로
+    잘못 안내하면 가격·품질 기대가 달라진다. extra_specs.stock_condition이
+    'used'로 명시된 경우에만 참. replacement._build_stock_note()와 같은 기준.
+    """
+    if not product or not product.specs or not product.specs.extra_specs:
+        return False
+    return product.specs.extra_specs.get("stock_condition") == "used"
+
+
 def _build_product_info(product: Product) -> str:
     """카테고리 + 간략 동작사양 조합."""
     lines = []
@@ -318,10 +330,19 @@ async def get_inventory_status(model_name: str, db: AsyncSession) -> str:
     # ────────────────────────────────────────────
     # 5) 재고 있음 (low_stock 포함)
     # ────────────────────────────────────────────
+    # 단종품 보유분이 중고인 경우 '재고 있음'만 쓰면 고객은 신품으로 읽는다.
+    # iG5A처럼 신품 단종 + 중고 재고 판매 중인 품목이 실제로 있으므로 명시한다.
+    used = _is_used_stock(product)
+    stock_word = "중고 재고 있음" if used else "재고 있음"
     if stock["state"] == "low_stock":
-        stock_label = "✅ 재고 있음 (소진 임박 — 서두르시는 걸 권장드립니다)"
+        stock_label = f"✅ {stock_word} (소진 임박 — 서두르시는 걸 권장드립니다)"
     else:
-        stock_label = "✅ 재고 있음"
+        stock_label = f"✅ {stock_word}"
+    if used:
+        disc_label = (
+            "\n⚠️ 신품은 단종됐고, 보유분은 중고입니다 "
+            "(상태는 문의해 주세요). 소진 후 구매 불가합니다."
+        )
 
     # 재고 조회 의도로 매칭에 성공한 경우 매번 알림. 재고가 충분한 문의도
     # "어떤 상품을 고객이 찾고 있는가"라는 수요 신호로 쓴다. 발송량은
